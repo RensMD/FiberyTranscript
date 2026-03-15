@@ -32,8 +32,19 @@ class TranscriptManager {
      * Get all transcript text as plain string.
      */
     getFullText() {
+        if (this._cleanedText) {
+            return this._cleanedText;
+        }
         const elements = this.container.querySelectorAll('.final');
-        return Array.from(elements).map(el => el.textContent).join('\n');
+        if (elements.length > 0) {
+            return Array.from(elements).map(el => el.textContent).join('\n');
+        }
+        // Fallback: cleaned transcript stored as DOM text by setCleanedTranscript
+        const cleaned = this.container.querySelector('.cleaned-transcript');
+        if (cleaned && cleaned.textContent) {
+            return cleaned.textContent;
+        }
+        return '';
     }
 
     /**
@@ -68,6 +79,16 @@ class TranscriptManager {
             }
         }
         return text.trim();
+    }
+
+    /**
+     * Returns true if transcript has any content (cleaned text, or raw utterance elements).
+     */
+    hasContent() {
+        if (this._cleanedText && this._cleanedText.trim().length > 0) return true;
+        if (this.container.querySelectorAll('.final').length > 0) return true;
+        if (this.container.querySelectorAll('.cleaned-transcript').length > 0) return true;
+        return false;
     }
 
     /**

@@ -11,21 +11,34 @@ MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds
 
 
+_COMPRESS_CHUNK_FRAMES = 65536  # ~4 s at 16 kHz — keeps memory usage low
+
+
 def _compress_audio(wav_path: str) -> str:
     """Compress WAV to a smaller format for faster upload.
 
-    Tries OGG Vorbis first (dramatically smaller for speech), then FLAC,
+    Uses streaming I/O to avoid loading the entire file into memory
+    (large WAVs can be several GB). Tries OGG Vorbis first, then FLAC,
     then falls back to uncompressed WAV.
     """
     try:
         import soundfile as sf
 
-        data, samplerate = sf.read(wav_path)
-
         # Try OGG Vorbis first — much smaller than FLAC for speech audio
         try:
             ogg_path = str(Path(wav_path).with_suffix(".ogg"))
-            sf.write(ogg_path, data, samplerate, format="OGG", subtype="VORBIS")
+            with sf.SoundFile(wav_path, "r") as src:
+                with sf.SoundFile(
+                    ogg_path, "w",
+                    samplerate=src.samplerate,
+                    channels=src.channels,
+                    format="OGG", subtype="VORBIS",
+                ) as dst:
+                    while True:
+                        chunk = src.read(_COMPRESS_CHUNK_FRAMES)
+                        if len(chunk) == 0:
+                            break
+                        dst.write(chunk)
             wav_size = Path(wav_path).stat().st_size
             ogg_size = Path(ogg_path).stat().st_size
             reduction = (1 - ogg_size / wav_size) * 100
@@ -37,17 +50,32 @@ def _compress_audio(wav_path: str) -> str:
         except Exception as e:
             logger.debug("OGG Vorbis compression failed, trying FLAC: %s", e)
 
-        # Fall back to FLAC
-        flac_path = str(Path(wav_path).with_suffix(".flac"))
-        sf.write(flac_path, data, samplerate)
-        wav_size = Path(wav_path).stat().st_size
-        flac_size = Path(flac_path).stat().st_size
-        reduction = (1 - flac_size / wav_size) * 100
-        logger.info(
-            "Compressed %s → FLAC (%.0f%% smaller: %.1f MB → %.1f MB)",
-            Path(wav_path).name, reduction, wav_size / 1e6, flac_size / 1e6,
-        )
-        return flac_path
+        # Fall back to FLAC (streaming)
+        try:
+            flac_path = str(Path(wav_path).with_suffix(".flac"))
+            with sf.SoundFile(wav_path, "r") as src:
+                with sf.SoundFile(
+                    flac_path, "w",
+                    samplerate=src.samplerate,
+                    channels=src.channels,
+                    format="FLAC",
+                ) as dst:
+                    while True:
+                        chunk = src.read(_COMPRESS_CHUNK_FRAMES)
+                        if len(chunk) == 0:
+                            break
+                        dst.write(chunk)
+            wav_size = Path(wav_path).stat().st_size
+            flac_size = Path(flac_path).stat().st_size
+            reduction = (1 - flac_size / wav_size) * 100
+            logger.info(
+                "Compressed %s → FLAC (%.0f%% smaller: %.1f MB → %.1f MB)",
+                Path(wav_path).name, reduction, wav_size / 1e6, flac_size / 1e6,
+            )
+            return flac_path
+        except Exception as e:
+            logger.debug("FLAC compression also failed: %s", e)
+            return wav_path
 
     except ImportError:
         logger.debug("soundfile not installed, uploading uncompressed WAV")

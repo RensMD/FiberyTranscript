@@ -1017,6 +1017,20 @@ class FiberyTranscriptApp:
                     from integrations.context_builder import build_summary_context
 
                     meeting_context = build_summary_context(entity_ctx) if entity_ctx else ""
+
+                    # Determine best audio file for multimodal cleanup:
+                    # prefer compressed (OGG/FLAC) over WAV for faster upload.
+                    cleanup_audio = compressed_path or ""
+                    if not cleanup_audio and wav_path:
+                        # Check for OGG/FLAC created by _compress_audio during batch
+                        for ext in (".ogg", ".flac"):
+                            candidate = Path(wav_path).with_suffix(ext)
+                            if candidate.exists():
+                                cleanup_audio = str(candidate)
+                                break
+                        else:
+                            cleanup_audio = wav_path
+
                     cleaned = cleanup_transcript(
                         api_key=gemini_key,
                         transcript=raw_text,
@@ -1024,6 +1038,7 @@ class FiberyTranscriptApp:
                         meeting_context=meeting_context,
                         company_context=self.settings.company_context,
                         model=self.settings.gemini_model_cleanup,
+                        audio_path=cleanup_audio,
                     )
                     results.set_cleaned_transcript(cleaned)
                 except Exception as e:

@@ -1,7 +1,7 @@
 """Application constants and prompt templates."""
 
 APP_NAME = "Fibery Transcript"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 _DEFAULT_FIBERY_INSTANCE_URL = "https://your-workspace.fibery.io"
 _DEFAULT_COMPANY_CONTEXT = """Add your internal company context here to improve name disambiguation.
@@ -79,8 +79,8 @@ misheard words, grammar errors, and mistakes with names; use the meeting context
 The provided notes are written on the fly by a meeting participant, and may be incomplete, unstructured, or contain errors."""
 
 # Transcript cleanup prompt (used by Gemini to clean up raw AssemblyAI output)
-TRANSCRIPT_CLEANUP_PROMPT = """You are a transcript editor. Your task is to clean up \
-an auto-generated meeting transcript. The output language should be {language}.
+TRANSCRIPT_CLEANUP_PROMPT = """You are a transcript checker. Your task is to clean up \
+an auto-generated meeting transcript. Remove filler words. Use the meeting context to resolve name ambiguities and fix obvious transcription errors. \
 
 Instructions:
 - Identify speakers by name using the meeting context below. Replace generic \
@@ -88,6 +88,17 @@ Instructions:
 If uncertain about a speaker's identity, use a descriptive label like \
 "[Internal participant]" or "[External participant]".
 - Fix obvious transcription errors: broken sentences, misheard words, grammar issues.
-- Preserve the original meaning - do not add, remove, or change what was said.
+- Preserve the original meaning do not add, remove, or change what was said.
 - Split the transcript into a few broad thematic sections with short bold headers only.
-- Keep the speaker label format as **Name:** on its own line, followed by their text."""
+- Keep the speaker label format as **Name:** on its own line, followed by their text.
+- No em-dashes.
+- No Yeah, Uh, Um, Like, You know, or lonely "and" or similar filler words. Remove them entirely."""
+
+# Audio-assisted variant: appended when the recording audio is also provided
+TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM = """
+The original meeting audio is attached. Do NOT re-transcribe from scratch; improve the provided transcript. Use it to:
+- Verify and correct words that the automatic transcription may have misheard, \
+especially names, technical terms, and non-English words.
+- Resolve speaker identification where the text alone is ambiguous — listen for \
+voice differences to confirm who is speaking.
+"""

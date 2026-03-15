@@ -25,7 +25,7 @@ class Settings:
     # AI models
     gemini_model: str = "gemini-3.1-pro-preview"
     gemini_model_fallback: str = "gemini-3-flash-preview"
-    gemini_model_cleanup: str = "gemini-2.0-flash"
+    gemini_model_cleanup: str = "gemini-2.5-flash-lite"
 
     # Summarization
     company_context: str = ""

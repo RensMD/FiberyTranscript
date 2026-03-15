@@ -268,8 +268,16 @@ function updateAudioStorageState() {
         audioStorageHint.textContent = 'Not available for interviews';
         if (fiberyRadio.checked) localRadio.checked = true;
     } else {
+        const wasDisabled = fiberyRadio.disabled;
         fiberyRadio.disabled = false;
         audioStorageHint.textContent = '';
+        // Restore the user's default when Fibery first becomes available
+        // (it was forced to "local" while no meeting was linked)
+        if (wasDisabled) {
+            const defaultStorage = window._defaultAudioStorage || 'local';
+            const radio = document.querySelector(`input[name="audioStorage"][value="${defaultStorage}"]`);
+            if (radio) radio.checked = true;
+        }
     }
 }
 
@@ -557,8 +565,10 @@ function updateSelectButtonState() {
     selectMeetingBtn.disabled = !isEntity;
     if (isEntity) {
         fiberySelectHint.classList.add('hidden');
+        fiberySelectRow.classList.remove('hidden');
     } else {
         fiberySelectHint.classList.remove('hidden');
+        fiberySelectRow.classList.add('hidden');
     }
 }
 
@@ -637,7 +647,7 @@ async function selectMeetingFromPanel() {
     } catch (err) {
         setFiberyValidateStatus('Error: ' + err, 'error');
     } finally {
-        selectMeetingBtn.textContent = 'Select meeting';
+        selectMeetingBtn.textContent = 'Select current meeting \u2192';
         updateSelectButtonState();
     }
 }
@@ -742,21 +752,7 @@ changeLinkBtn.addEventListener('click', async () => {
         return;
     }
     await window.pywebview.api.deselect_meeting();
-    fiberyEntityInfo.classList.add('hidden');
-    fiberySelectRow.classList.remove('hidden');
-    fiberySelectHint.classList.remove('hidden');
-    createMeetingDividerRow.classList.remove('hidden');
-    createMeetingFields.classList.remove('hidden');
-    createMeetingName.value = '';
-    document.querySelectorAll('.create-meeting-btn').forEach(b => { b.disabled = true; });
-    fiberyValidated = false;
-    currentFiberyUrl = '';
-    currentEntityUrl = '';
-    currentEntityDb = '';
-    entityLink.href = '#';
-    setFiberyValidateStatus('', '');
-    updateSelectButtonState();
-    updateAudioStorageState();
+    resetFiberyValidation();
     // Re-collapse audio storage when meeting deselected
     audioStorageCollapsible.classList.add('collapsed');
     // Show warning if deselected during recording
@@ -1065,8 +1061,10 @@ window.onProcessingComplete = function() {
         continueRecordingBtn.textContent = 'Continue Recording';
     }
 
-    // Warn if transcript is empty (e.g. very short recording with no speech)
-    if (window.transcriptManager.getFullText().length === 0) {
+    // Warn if transcript is empty (e.g. very short recording with no speech).
+    // Check both cleaned text and raw DOM elements — cleaned text can be empty
+    // due to Gemini cleanup even when utterances exist.
+    if (window.transcriptManager.hasContent && !window.transcriptManager.hasContent()) {
         showToast('No speech detected in the recording.', 'warning', 8000);
     }
 
@@ -1238,8 +1236,7 @@ window.onTranscriptSendError = function(message) {
 
 // === Summarize (step 3) ===
 summarizeBtn.addEventListener('click', async () => {
-    const hasTranscript = window.transcriptManager.getFullText().length > 0;
-    if (!hasTranscript) {
+    if (!window.transcriptManager.hasContent()) {
         setFiberyStatus('No transcript available yet.', 'error');
         return;
     }

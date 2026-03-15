@@ -20,6 +20,18 @@ _PANEL_DEFAULT_WIDTH = 900
 _MIN_PANEL_WIDTH = 900
 _DEFAULT_URL = FIBERY_INSTANCE_URL
 
+# Injected into the Fibery panel after each page load.
+# Hooks pushState/replaceState and popstate so SPA navigations
+# (which do NOT fire WebView2's SourceChanged) are reported back.
+_SPA_URL_HOOK_JS = """(function(){
+if(window.__ftUrlHook)return;window.__ftUrlHook=true;
+var last=location.href;
+function n(){var u=location.href;if(u!==last){last=u;window.chrome.webview.postMessage(u);}}
+var p=history.pushState;history.pushState=function(){var r=p.apply(this,arguments);n();return r;};
+var r=history.replaceState;history.replaceState=function(){var v=r.apply(this,arguments);n();return v;};
+window.addEventListener('popstate',n);
+})();"""
+
 
 def _get_winforms_form(main_window):
     """Return the WinForms BrowserForm for the given pywebview window."""
@@ -218,10 +230,43 @@ class EntityPanel:
 
         # Navigate once the core is ready
         _url = url
+        main_window = self._main
+
+        def _fire_url_changed(url):
+            """Notify the main webview of a panel URL change (on background thread)."""
+            if not url or not main_window:
+                return
+            import json
+            import threading
+            threading.Thread(
+                target=lambda: main_window.evaluate_js(
+                    f"window.onPanelUrlChanged && window.onPanelUrlChanged({json.dumps(url)})"
+                ),
+                daemon=True,
+            ).start()
+
+        def on_web_message(sender, args):
+            """Handle URL change messages from the injected SPA pushState hook."""
+            try:
+                import json as _json
+                url = _json.loads(args.WebMessageAsJson)
+                _fire_url_changed(url)
+            except Exception:
+                logger.debug("WebMessageReceived callback error", exc_info=True)
+
+        def on_nav_completed(sender, args):
+            """Inject SPA URL hook after each page load."""
+            try:
+                if sender.CoreWebView2:
+                    sender.CoreWebView2.ExecuteScriptAsync(_SPA_URL_HOOK_JS)
+            except Exception:
+                logger.debug("Nav completed script injection error", exc_info=True)
 
         def on_init_complete(sender, args):
             try:
                 if args.IsSuccess:
+                    sender.CoreWebView2.WebMessageReceived += on_web_message
+                    sender.CoreWebView2.NavigationCompleted += on_nav_completed
                     sender.CoreWebView2.Navigate(_url)
                 else:
                     logger.error("WebView2 init failed: %s", args.InitializationException)
@@ -230,21 +275,11 @@ class EntityPanel:
 
         panel_wv.CoreWebView2InitializationCompleted += on_init_complete
 
-        # Track URL changes (SPA pushState) and notify JS
-        main_window = self._main
+        # Track URL changes (real navigations) and notify JS
         def on_source_changed(sender, args):
             try:
                 url = sender.CoreWebView2.Source if sender.CoreWebView2 else ""
-                if main_window:
-                    import json
-                    import threading
-                    # Fire on background thread to avoid UI-thread deadlock with evaluate_js
-                    threading.Thread(
-                        target=lambda: main_window.evaluate_js(
-                            f"window.onPanelUrlChanged && window.onPanelUrlChanged({json.dumps(url)})"
-                        ),
-                        daemon=True,
-                    ).start()
+                _fire_url_changed(url)
             except Exception:
                 logger.debug("SourceChanged callback error", exc_info=True)
 
