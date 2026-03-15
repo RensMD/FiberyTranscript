@@ -284,9 +284,25 @@ class ApiBridge:
             logger.error("Recording lock release failed: %s", e)
             return {"success": False, "error": str(e)}
 
+    # --- Retry ---
+
+    def retry_send_transcript(self) -> dict:
+        """Retry sending transcript to Fibery."""
+        try:
+            return self._app.retry_send_transcript()
+        except Exception as e:
+            logger.error("Retry transcript send failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def retry_audio_upload(self) -> dict:
+        """Retry uploading audio to Fibery."""
+        try:
+            return self._app.retry_audio_upload()
+        except Exception as e:
+            logger.error("Retry audio upload failed: %s", e)
+            return {"success": False, "error": str(e)}
+
     # --- Fibery ---
-
-
 
     def open_url(self, url: str) -> dict:
         """Open a URL in the default browser."""

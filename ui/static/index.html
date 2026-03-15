@@ -14,6 +14,7 @@
     <header class="header">
         <div class="header-left">
             <button class="new-meeting-link hidden" id="newMeetingBtn">+ New meeting</button>
+            <button class="action-btn small-btn" id="retryBatchBtn" style="display:none;">Retry Transcription</button>
         </div>
         <div class="header-right">
             <button class="icon-btn" id="settingsBtn" title="Settings">
@@ -242,6 +243,10 @@
                             <button class="link-btn" id="copySummaryBtn" title="Copy AI summary" disabled>Copy Summary</button>
                         </div>
                         <span class="status-badge" id="summaryStatusBadge"></span>
+                    </div>
+                    <div class="retry-row hidden" id="retryRow">
+                        <button class="action-btn small-btn" id="retryTranscriptBtn" style="display:none;">Retry Send Transcript</button>
+                        <button class="action-btn small-btn" id="retryAudioUploadBtn" style="display:none;">Retry Audio Upload</button>
                     </div>
                 </div>
             </div>

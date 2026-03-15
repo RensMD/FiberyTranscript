@@ -824,6 +824,11 @@ textarea::placeholder {
     align-items: center;
     gap: 12px;
 }
+.retry-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
 
 .copy-links {
     display: flex;

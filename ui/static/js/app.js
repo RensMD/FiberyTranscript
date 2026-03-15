@@ -70,6 +70,7 @@ const recordingMetaCollapsible = document.getElementById('recordingMetaCollapsib
 const uploadCollapsible = document.getElementById('uploadCollapsible');
 const sendPanelCollapsible = document.getElementById('sendPanelCollapsible');
 const newMeetingBtn = document.getElementById('newMeetingBtn');
+const retryBatchBtn = document.getElementById('retryBatchBtn');
 const continueRecordingBanner = document.getElementById('continueRecordingBanner');
 const continueRecordingBtn = document.getElementById('continueRecordingBtn');
 
@@ -99,6 +100,9 @@ const summarizeBtn = document.getElementById('summarizeBtn');
 const summaryStatusBadge = document.getElementById('summaryStatusBadge');
 const copyTranscriptBtn = document.getElementById('copyTranscriptBtn');
 const copySummaryBtn = document.getElementById('copySummaryBtn');
+const retryRow = document.getElementById('retryRow');
+const retryTranscriptBtn = document.getElementById('retryTranscriptBtn');
+const retryAudioUploadBtn = document.getElementById('retryAudioUploadBtn');
 
 // === Initialization ===
 window.addEventListener('pywebviewready', async () => {
@@ -377,10 +381,13 @@ function formatFileSize(bytes) {
 // === Fibery Audio Upload Callbacks ===
 window.onAudioUploadedToFibery = function() {
     showToast('Audio recording uploaded to Fibery', 'success');
+    retryAudioUploadBtn.style.display = 'none';
 };
 
 window.onAudioUploadError = function(message) {
     showToast('Audio upload to Fibery failed: ' + message, 'warning', 8000);
+    retryAudioUploadBtn.style.display = '';
+    retryRow.classList.remove('hidden');
 };
 
 // === Level Monitoring ===
@@ -768,11 +775,17 @@ async function resetSession() {
     transcribeBtn.textContent = 'Transcribe';
     browseAudioBtn.classList.remove('hidden');
 
-    // Reset summary state
+    // Reset summary and retry state
     generatedSummary = '';
     sendActions.classList.remove('visible');
     summaryStatusBadge.textContent = '';
     copySummaryBtn.disabled = true;
+    summarizeBtn.textContent = 'Summarize';
+    retryTranscriptBtn.style.display = 'none';
+    retryAudioUploadBtn.style.display = 'none';
+    retryRow.classList.add('hidden');
+    retryBatchBtn.style.display = 'none';
+    _lastFailedWavPath = '';
 
     // Clear warnings
     fiberyMissingWarning.classList.add('hidden');
@@ -995,12 +1008,15 @@ window.onError = function(message) {
     newMeetingBtn.classList.remove('hidden');
 };
 
+let _lastFailedWavPath = '';
 window.onBatchFailed = function(info) {
     setStatus('', '');
     sendActions.classList.remove('visible');
     uploadCollapsible.classList.remove('collapsed');
-    if (info.wav_path) {
-        showToast('Your recording was saved. You can retry via Upload.', 'info', 10000);
+    _lastFailedWavPath = (info && info.wav_path) || '';
+    if (_lastFailedWavPath) {
+        showToast('Transcription failed. Your recording was saved — click Retry to try again.', 'info', 10000);
+        retryBatchBtn.style.display = '';
     }
     newMeetingBtn.classList.remove('hidden');
     // Resume idle monitoring (same as onProcessingComplete)
@@ -1120,10 +1136,13 @@ function getSummaryStyle() {
 // === Transcript auto-send callbacks (triggered from Python after step 2) ===
 window.onTranscriptSentToFibery = function() {
     setStatus('completed', 'Transcript sent');
+    retryTranscriptBtn.style.display = 'none';
 };
 
 window.onTranscriptSendError = function(message) {
     showToast('Could not send transcript to Fibery: ' + message, 'warning', 8000);
+    retryTranscriptBtn.style.display = '';
+    retryRow.classList.remove('hidden');
 };
 
 // === Summarize (step 3) ===
@@ -1152,6 +1171,7 @@ window.onSummarizeComplete = function(result) {
     generatedSummary = (result && result.summary) ? result.summary : '';
     copySummaryBtn.disabled = !generatedSummary;
     summarizeBtn.disabled = false;
+    summarizeBtn.textContent = 'Summarize';
 
     if (result && result.sent_to_fibery) {
         setFiberyStatus('Updated in Fibery', 'success');
@@ -1166,6 +1186,7 @@ window.onSummarizeComplete = function(result) {
 window.onSummarizeError = function(message) {
     setFiberyStatus('Error: ' + message, 'error');
     summarizeBtn.disabled = false;
+    summarizeBtn.textContent = 'Retry Summary';
 };
 
 // === Pending summary sent after link was added ===
@@ -1181,6 +1202,44 @@ function setFiberyStatus(text, type) {
     summaryStatusBadge.textContent = text || '';
     summaryStatusBadge.className = 'status-badge' + (type ? ' ' + type : '');
 }
+
+// === Retry Handlers ===
+retryTranscriptBtn.addEventListener('click', async () => {
+    retryTranscriptBtn.disabled = true;
+    try {
+        await callApi('retry_send_transcript');
+        retryTranscriptBtn.style.display = 'none';
+    } catch (err) {
+        showToast('Retry failed: ' + err, 'error');
+    } finally {
+        retryTranscriptBtn.disabled = false;
+    }
+});
+
+retryAudioUploadBtn.addEventListener('click', async () => {
+    retryAudioUploadBtn.disabled = true;
+    try {
+        await callApi('retry_audio_upload');
+    } catch (err) {
+        showToast('Retry failed: ' + err, 'error');
+    } finally {
+        retryAudioUploadBtn.disabled = false;
+    }
+});
+
+retryBatchBtn.addEventListener('click', async () => {
+    if (!_lastFailedWavPath) return;
+    retryBatchBtn.disabled = true;
+    retryBatchBtn.style.display = 'none';
+    try {
+        await callApi('upload_and_transcribe', _lastFailedWavPath);
+        _lastFailedWavPath = '';
+    } catch (err) {
+        showToast('Retry failed: ' + err, 'error');
+        retryBatchBtn.disabled = false;
+        retryBatchBtn.style.display = '';
+    }
+});
 
 // === Transcript Actions ===
 copyTranscriptBtn.addEventListener('click', () => {

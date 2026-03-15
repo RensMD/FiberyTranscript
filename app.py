@@ -1131,6 +1131,44 @@ class FiberyTranscriptApp:
                 f"window.onPendingSummarySendError({json.dumps(result.get('error', 'Unknown error'))})"
             )
 
+    def retry_send_transcript(self) -> dict:
+        """Retry sending transcript to Fibery (called by UI retry button)."""
+        if not self._session:
+            return {"success": False, "error": "No active session"}
+        ctx = self._session.context
+        entity = ctx.entity or self._validated_entity
+        client = ctx.fibery_client or self._fibery_client
+        if not entity or not client:
+            return {"success": False, "error": "No Fibery entity linked"}
+        if not self._session.results.try_start_transcript_send():
+            return {"success": False, "error": "Send already in progress"}
+        try:
+            transcript = self._session.results.get_cleaned_transcript()
+            if not transcript:
+                batch = self._session.results.get_batch_result()
+                if batch and batch.get("utterances"):
+                    transcript = format_diarized_transcript(batch["utterances"])
+            if not transcript:
+                self._session.results.finish_transcript_send(success=False)
+                return {"success": False, "error": "No transcript available"}
+            client.update_transcript_only(entity, transcript)
+            self._session.results.finish_transcript_send(success=True)
+            self._notify_js("window.onTranscriptSentToFibery()")
+            return {"success": True}
+        except Exception as e:
+            self._session.results.finish_transcript_send(success=False)
+            return {"success": False, "error": _friendly_error(e)}
+
+    def retry_audio_upload(self) -> dict:
+        """Retry uploading audio to Fibery (called by UI retry button)."""
+        if not self._session:
+            return {"success": False, "error": "No active session"}
+        wav_path = self._session.context.wav_path
+        if not wav_path:
+            return {"success": False, "error": "No recording available"}
+        self._upload_audio_to_fibery(wav_path, self._session)
+        return {"success": True}
+
     def _auto_send_transcript(self, entity, fibery_client, session: "RecordingSession" = None) -> None:
         """Send the current transcript to the Fibery Transcript field (background thread).
 
