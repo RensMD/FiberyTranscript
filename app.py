@@ -399,6 +399,11 @@ class FiberyTranscriptApp:
         mic_device = self._find_device(mic_index, is_loopback=False) if mic_index is not None else None
         loopback_device = self._find_device(loopback_index, is_loopback=True) if loopback_index is not None else None
 
+        if mic_index is not None and mic_device is None:
+            raise RuntimeError("Selected microphone is no longer available. Please refresh your audio devices.")
+        if loopback_index is not None and loopback_device is None:
+            raise RuntimeError("Selected speaker output is no longer available. Please refresh your audio devices.")
+
         # Start WAV recorder
         recordings_dir = Path(self.settings.recordings_dir) if self.settings.recordings_dir else self.data_dir / "recordings"
         self._recorder = WavRecorder(recordings_dir)
