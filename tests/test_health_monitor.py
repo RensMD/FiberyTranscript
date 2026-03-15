@@ -185,7 +185,8 @@ class TestWarnings:
         m = AudioHealthMonitor()
         h = AudioHealth(mic_alive=False, sys_alive=False)
         warnings = m.check_warnings(h)
-        assert any("Both" in w for w in warnings)
+        assert any("BOTH_DEAD:" in w for w in warnings)
+        assert any("stopping" in w.lower() for w in warnings)
 
     def test_clipping_warning(self):
         m = AudioHealthMonitor()

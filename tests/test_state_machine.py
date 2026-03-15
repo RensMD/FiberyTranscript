@@ -77,13 +77,39 @@ class TestNeedsCloseConfirmation:
         assert app.needs_close_confirmation is True
 
     def test_completed_entity_transcript_sent(self):
-        """Entity linked and transcript sent → no confirmation."""
+        """Entity linked and transcript sent, no summary → no confirmation."""
         app = _make_app()
         app.state = "completed"
         ctx = SessionContext(entity="some-entity")
         session = RecordingSession(ctx)
         session.results.try_start_transcript_send()
         session.results.finish_transcript_send(success=True)
+        app._session = session
+        assert app.needs_close_confirmation is False
+
+    def test_completed_entity_transcript_sent_summary_unsent(self):
+        """Entity linked, transcript sent, summary generated but NOT sent → needs confirmation."""
+        app = _make_app()
+        app.state = "completed"
+        ctx = SessionContext(entity="some-entity")
+        session = RecordingSession(ctx)
+        session.results.try_start_transcript_send()
+        session.results.finish_transcript_send(success=True)
+        session.results.set_generated_summary("Some summary")
+        app._session = session
+        assert app.needs_close_confirmation is True
+
+    def test_completed_entity_transcript_and_summary_sent(self):
+        """Entity linked, both transcript and summary sent → no confirmation."""
+        app = _make_app()
+        app.state = "completed"
+        ctx = SessionContext(entity="some-entity")
+        session = RecordingSession(ctx)
+        session.results.try_start_transcript_send()
+        session.results.finish_transcript_send(success=True)
+        session.results.set_generated_summary("Some summary")
+        session.results.try_start_summary_send()
+        session.results.finish_summary_send(success=True)
         app._session = session
         assert app.needs_close_confirmation is False
 

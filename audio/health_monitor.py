@@ -148,8 +148,8 @@ class AudioHealthMonitor:
 
         if not health.mic_alive and not health.sys_alive and not self._both_dead_toasted:
             self._both_dead_toasted = True
-            warnings.append("Both audio sources are silent. Check your connections.")
-            logger.warning("Both channels dead")
+            warnings.append("BOTH_DEAD:Both audio sources are silent — stopping recording.")
+            logger.warning("Both channels dead — requesting auto-stop")
 
         if (health.mic_clipping or health.sys_clipping) and not self._clipping_toasted:
             self._clipping_toasted = True

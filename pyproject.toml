@@ -24,6 +24,11 @@ build = ["pyinstaller>=6.0"]
 [project.scripts]
 fibery-transcript = "main:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+tmp_path_retention_policy = "none"
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

@@ -116,11 +116,21 @@ def _setup_tray(app, window):
             window.restore()
 
         def on_quit():
+            # Warn if unsent work would be lost
+            if app.needs_close_confirmation:
+                # Show window so user can see the state before deciding
+                window.show()
+                window.restore()
+                # The native close flow (with confirm_close=True) will handle the dialog
+                window.confirm_close = True
+                # Trigger the window close, which will show the confirmation dialog
+                try:
+                    window.destroy()
+                except Exception:
+                    pass
+                return
             # Clean up
             app.begin_shutdown()
-            app.stop_background_scanning()
-            if app.audio_capture.is_capturing():
-                app.audio_capture.stop_capture()
             window.destroy()
 
         def on_toggle_recording():

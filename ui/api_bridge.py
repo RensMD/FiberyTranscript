@@ -246,11 +246,16 @@ class ApiBridge:
                 setattr(self._app.settings, key, value)
             self._app.save_settings()
             # Apply autostart if it was changed
+            autostart_warning = None
             if 'auto_start_on_boot' in settings_dict:
                 from utils.autostart import set_autostart
                 new_autostart = self._app.settings.auto_start_on_boot
                 if not set_autostart(new_autostart):
-                    logger.warning("Failed to %s autostart", "enable" if new_autostart else "disable")
+                    action = "enable" if new_autostart else "disable"
+                    logger.warning("Failed to %s autostart", action)
+                    autostart_warning = f"Settings saved, but failed to {action} start-on-boot. You may need to configure this manually in your OS settings."
+            if autostart_warning:
+                return {"success": True, "warning": autostart_warning}
             return {"success": True}
         except Exception as e:
             logger.error("Failed to save settings: %s", e)

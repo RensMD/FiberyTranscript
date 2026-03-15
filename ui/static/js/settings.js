@@ -136,7 +136,10 @@ class SettingsManager {
         };
 
         try {
-            await window.pywebview.api.save_settings(settings);
+            const saveResult = await window.pywebview.api.save_settings(settings);
+            if (saveResult && saveResult.warning) {
+                showToast(saveResult.warning, 'warning', 8000);
+            }
 
             // Update the cached default audio storage
             window._defaultAudioStorage = settings.audio_storage || 'local';

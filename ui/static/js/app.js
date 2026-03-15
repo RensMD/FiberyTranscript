@@ -727,6 +727,11 @@ function resetFiberyValidation() {
 }
 
 changeLinkBtn.addEventListener('click', async () => {
+    // Block meeting changes during recording/processing
+    if (isRecording || recordBtn.classList.contains('processing')) {
+        showToast('Cannot change meeting while recording or processing.', 'warning');
+        return;
+    }
     await window.pywebview.api.deselect_meeting();
     fiberyEntityInfo.classList.add('hidden');
     fiberySelectRow.classList.remove('hidden');
@@ -951,6 +956,7 @@ async function startRecording() {
         // Revert progressive disclosure
         recordingMetaCollapsible.classList.add('collapsed');
         uploadCollapsible.classList.remove('collapsed');
+        sendPanelCollapsible.classList.add('collapsed');
         audioStorageCollapsible.classList.add('collapsed');
         // Release lock if we acquired one
         try { await callApi('release_recording_lock'); } catch (_) {}
