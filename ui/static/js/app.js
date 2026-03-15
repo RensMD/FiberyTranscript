@@ -709,8 +709,8 @@ continueRecordingBtn.addEventListener('click', async () => {
         return;
     }
 
-    const result = await window.pywebview.api.continue_recording(micIdx, loopIdx);
-    if (result.success) {
+    try {
+        await callApi('continue_recording', micIdx, loopIdx);
         continueRecordingBanner.classList.add('hidden');
         isRecording = true;
         setStatus('recording', 'Recording');
@@ -718,8 +718,8 @@ continueRecordingBtn.addEventListener('click', async () => {
         startTimer();
         newMeetingBtn.classList.add('hidden');
         showToast('Recording resumed. Transcripts will be merged.', 'info', 5000);
-    } else {
-        showToast('Failed to continue recording: ' + (result.error || 'Unknown error'), 'error');
+    } catch (err) {
+        showToast('Failed to continue recording: ' + err, 'error');
     }
 });
 
