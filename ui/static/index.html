@@ -126,6 +126,14 @@
                     </div>
                 </div>
 
+                <!-- Audio Health Indicators (visible during recording) -->
+                <div class="audio-health hidden" id="audioHealth">
+                    <span class="health-badge" id="healthMic"><span class="health-dot green"></span> Mic active</span>
+                    <span class="health-badge" id="healthSys"><span class="health-dot green"></span> System active</span>
+                    <span class="health-badge hidden" id="healthClipping"><span class="health-dot red pulse"></span> Clipping!</span>
+                    <span class="health-badge hidden" id="healthSilence"><span class="health-dot gray"></span> <span id="healthSilenceText">No speech</span></span>
+                </div>
+
                 <!-- Recording Controls -->
                 <div class="recording-controls">
                     <button class="record-btn" id="recordBtn">

@@ -830,6 +830,32 @@ textarea::placeholder {
     margin-top: 8px;
 }
 
+/* Audio health indicators */
+.audio-health {
+    display: flex;
+    gap: 12px;
+    padding: 4px 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.health-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.health-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.health-dot.green { background: #22c55e; }
+.health-dot.yellow { background: #eab308; }
+.health-dot.red { background: #ef4444; }
+.health-dot.gray { background: #6b7280; }
+.health-dot.pulse { animation: pulse-dot 1s ease-in-out infinite; }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
 .copy-links {
     display: flex;
     flex-direction: column;

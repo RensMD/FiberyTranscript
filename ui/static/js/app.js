@@ -390,6 +390,53 @@ window.onAudioUploadError = function(message) {
     retryRow.classList.remove('hidden');
 };
 
+// === Audio Health ===
+const audioHealthEl = document.getElementById('audioHealth');
+const healthMic = document.getElementById('healthMic');
+const healthSys = document.getElementById('healthSys');
+const healthClipping = document.getElementById('healthClipping');
+const healthSilence = document.getElementById('healthSilence');
+const healthSilenceText = document.getElementById('healthSilenceText');
+
+window.updateAudioHealth = function(h) {
+    // Mic status
+    const micDot = healthMic.querySelector('.health-dot');
+    if (h.mic_alive) {
+        micDot.className = 'health-dot green';
+        healthMic.lastChild.textContent = ' Mic active';
+    } else {
+        micDot.className = 'health-dot red';
+        healthMic.lastChild.textContent = ' Mic dead — check connection';
+    }
+    // Sys status
+    const sysDot = healthSys.querySelector('.health-dot');
+    if (h.sys_alive) {
+        sysDot.className = 'health-dot green';
+        healthSys.lastChild.textContent = ' System active';
+    } else {
+        sysDot.className = 'health-dot yellow';
+        healthSys.lastChild.textContent = ' No system audio';
+    }
+    // Clipping
+    if (h.mic_clipping || h.sys_clipping) {
+        healthClipping.classList.remove('hidden');
+    } else {
+        healthClipping.classList.add('hidden');
+    }
+    // Speech/silence
+    if (!h.speech_detected && h.silence_duration > 300) {
+        const mins = Math.floor(h.silence_duration / 60);
+        healthSilenceText.textContent = 'No speech for ' + mins + ' min';
+        healthSilence.classList.remove('hidden');
+    } else {
+        healthSilence.classList.add('hidden');
+    }
+};
+
+window.onHealthWarning = function(message) {
+    showToast(message, 'warning', 8000);
+};
+
 // === Level Monitoring ===
 async function startMonitoring() {
     if (isRecording) return;
@@ -753,6 +800,7 @@ async function resetSession() {
 
     // Reset recording meta and button
     recordingMetaCollapsible.classList.add('collapsed');
+    audioHealthEl.classList.add('hidden');
     setStatus('', '');
     recordTimer.textContent = '00:00:00';
 
@@ -843,6 +891,7 @@ async function startRecording() {
     // Update UI immediately so the button feels responsive
     isRecording = true;
     setStatus('recording', 'Recording');
+    audioHealthEl.classList.remove('hidden');
 
     // Show recording meta (timer + badge), hide upload section
     recordingMetaCollapsible.classList.remove('collapsed');
@@ -895,6 +944,7 @@ async function startRecording() {
         isRecording = false;
         setStatus('', '');
         stopTimer();
+        audioHealthEl.classList.add('hidden');
         console.error('Failed to start recording:', err);
         showToast('Failed to start recording: ' + err, 'error');
         fiberyMissingWarning.classList.add('hidden');
@@ -913,6 +963,7 @@ async function stopRecording() {
         // Only transition UI on success
         isRecording = false;
         stopTimer();
+        audioHealthEl.classList.add('hidden');
         setStatus('processing', 'Processing...');
     } catch (err) {
         // Stop failed — backend is STILL RECORDING. Keep UI in recording state.

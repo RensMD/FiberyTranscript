@@ -86,6 +86,10 @@ class FiberyTranscriptApp:
         self._is_shutting_down = False
         self._batch_thread: Optional[threading.Thread] = None
 
+        # Audio health monitoring
+        from audio.health_monitor import AudioHealthMonitor
+        self._health_monitor = AudioHealthMonitor()
+
         # Lock to prevent concurrent stop_recording calls (sleep + silence race)
         self._stop_lock = threading.Lock()
 
@@ -471,6 +475,7 @@ class FiberyTranscriptApp:
             entity_context=self._entity_context,
         ))
 
+        self._health_monitor.reset()
         self.state = self.STATE_RECORDING
         logger.info("Recording started (mic=%s, loopback=%s)",
                      mic_device and mic_device.name, loopback_device and loopback_device.name)
@@ -768,6 +773,16 @@ class FiberyTranscriptApp:
         self._notify_js(
             f"window.updateAudioLevels({self._last_mic_level:.4f}, {self._last_sys_level:.4f})"
         )
+
+        # Audio health monitoring during recording
+        if self.state == self.STATE_RECORDING:
+            health = self._health_monitor.update(mic_level, sys_level)
+            if health:
+                self._notify_js(
+                    f"window.updateAudioHealth && window.updateAudioHealth({json.dumps(health.to_dict())})"
+                )
+                for warning in self._health_monitor.check_warnings(health):
+                    self._notify_js(f"window.onHealthWarning && window.onHealthWarning({json.dumps(warning)})")
 
         self._check_recording_silence()
 
