@@ -37,6 +37,8 @@ def _friendly_error(e: Exception) -> str:
         return "Rate limit exceeded. Try again later."
     if "500" in msg or "502" in msg or "503" in msg:
         return "Gemini temporarily unavailable. Try again later."
+    if "not found" in msg.lower() or "Entity not found" in msg:
+        return "Meeting not found in Fibery. It may have been deleted."
     if len(msg) > 200:
         return f"{name}: {msg[:150]}..."
     return msg
@@ -84,6 +86,7 @@ class FiberyTranscriptApp:
         self._selected_mic_index: Optional[int] = None
         self._selected_sys_index: Optional[int] = None
         self._is_shutting_down = False
+        self._tray_quit_requested = False
         self._batch_thread: Optional[threading.Thread] = None
 
         # Audio health monitoring
@@ -104,6 +107,10 @@ class FiberyTranscriptApp:
 
         # Lock refresh tracking (refresh every 10 min during long recordings)
         self._last_lock_refresh: float = 0.0
+
+        # Session identity token — incremented on reset so background threads
+        # can detect that their session is stale and stop firing UI callbacks.
+        self._session_token: int = 0
 
         # Stashed results from previous recording segment (for continue-after-sleep)
         self._previous_batch_result: Optional[dict] = None
@@ -140,7 +147,9 @@ class FiberyTranscriptApp:
 
         Called by JS when user clicks 'New Meeting'. Prevents stale
         transcript/summary from leaking into a subsequent session.
+        Increments _session_token so background threads detect staleness.
         """
+        self._session_token += 1
         self.release_recording_lock()
         self._validated_entity = None
         self._entity_context = None
@@ -148,7 +157,7 @@ class FiberyTranscriptApp:
         self._previous_batch_result = None
         self._previous_cleaned_transcript = None
         self.state = self.STATE_IDLE
-        logger.info("Session reset")
+        logger.info("Session reset (token=%d)", self._session_token)
 
     # --- Recording Lock ---
 
@@ -258,8 +267,8 @@ class FiberyTranscriptApp:
 
     def deselect_meeting(self) -> None:
         """Clear the currently linked Fibery entity without closing the panel."""
-        if self.state in (self.STATE_RECORDING, self.STATE_PROCESSING):
-            logger.info("Deselect blocked — recording or processing is active")
+        if self.state == self.STATE_PROCESSING:
+            logger.info("Deselect blocked — processing is active")
             return
         if self._validated_entity:
             try:
@@ -591,12 +600,13 @@ class FiberyTranscriptApp:
             cp = self._recorder.compressed_path
             compressed_path = str(cp) if cp else None
 
-        # Bake the file paths into the frozen session context
+        # Bake the file paths into the frozen session context.
+        # Use current validated entity (user may have switched meetings during recording).
         if self._session and wav_path:
             self._session = RecordingSession(SessionContext(
-                entity=self._session.context.entity,
-                fibery_client=self._session.context.fibery_client,
-                entity_context=self._session.context.entity_context,
+                entity=self._validated_entity or self._session.context.entity,
+                fibery_client=self._fibery_client or self._session.context.fibery_client,
+                entity_context=self._entity_context or self._session.context.entity_context,
                 wav_path=str(wav_path),
                 compressed_path=compressed_path or "",
                 is_uploaded_file=False,
@@ -936,18 +946,25 @@ class FiberyTranscriptApp:
 
         Receives the session snapshot created at recording stop — immune to
         entity/path changes that happen on the main thread after this is called.
+        Uses a captured session_token to detect if reset_session() was called
+        while processing, in which case all UI mutations are silently dropped.
         """
         ctx = session.context
         results = session.results
         wav_path = ctx.wav_path
         compressed_path = ctx.compressed_path or None
+        token = self._session_token  # snapshot — stale if reset happens
+
+        def _stale():
+            return self._session_token != token
 
         try:
             from transcription.batch import transcribe_with_diarization
 
             def on_progress(msg):
                 logger.info("Batch: %s", msg)
-                self._notify_js(f"window.onProcessingProgress({json.dumps(msg)})")
+                if not _stale():
+                    self._notify_js(f"window.onProcessingProgress({json.dumps(msg)})")
 
             # Build word boost from frozen entity context
             word_boost = None
@@ -981,6 +998,11 @@ class FiberyTranscriptApp:
 
             results.set_batch_result(result)
 
+            # Session was reset while transcribing — abort all UI work
+            if _stale():
+                logger.info("Session reset during batch processing, aborting UI updates (token %d→%d)", token, self._session_token)
+                return
+
             # Update UI with raw diarized transcript immediately (fast feedback)
             utterances_json = json.dumps(result["utterances"])
             self._notify_js(f"window.setDiarizedTranscript({utterances_json})")
@@ -1007,7 +1029,8 @@ class FiberyTranscriptApp:
                 except Exception as e:
                     logger.warning("Transcript cleanup failed, using raw: %s", e)
                     results.set_cleaned_transcript(raw_text)
-                    self._notify_js("window.onCleanupFailed()")
+                    if not _stale():
+                        self._notify_js("window.onCleanupFailed()")
             else:
                 results.set_cleaned_transcript(raw_text)
 
@@ -1025,13 +1048,12 @@ class FiberyTranscriptApp:
             else:
                 cleaned_transcript = results.get_cleaned_transcript()
 
-            self._notify_js(f"window.setCleanedTranscript({json.dumps(cleaned_transcript)})")
-
-            # Guard: if session was reset while we were processing (user clicked
-            # New Meeting), don't overwrite state or fire stale callbacks.
-            if self._session is not session:
-                logger.info("Session was reset during batch processing, skipping completion")
+            # Final stale check before completing
+            if _stale():
+                logger.info("Session reset during cleanup, aborting completion (token %d→%d)", token, self._session_token)
                 return
+
+            self._notify_js(f"window.setCleanedTranscript({json.dumps(cleaned_transcript)})")
 
             self.state = self.STATE_COMPLETED
             self._notify_js("window.onProcessingComplete()")
@@ -1040,14 +1062,14 @@ class FiberyTranscriptApp:
             if ctx.entity and ctx.fibery_client:
                 threading.Thread(
                     target=self._auto_send_transcript,
-                    args=(ctx.entity, ctx.fibery_client, session),
+                    args=(ctx.entity, ctx.fibery_client, session, token),
                     daemon=True,
                 ).start()
 
             # Upload audio to Fibery if setting is "fibery"
             audio_upload_ok = False
             if self.settings.audio_storage == "fibery":
-                audio_upload_ok = self._upload_audio_to_fibery(wav_path, session)
+                audio_upload_ok = self._upload_audio_to_fibery(wav_path, session, token)
 
             # Post-processing for uploaded (browsed) files:
             # Copy the compressed file to recordings_dir for local backup
@@ -1075,21 +1097,28 @@ class FiberyTranscriptApp:
 
         except Exception as e:
             logger.error("Batch processing failed: %s", e)
+            if _stale():
+                return
             # Mark as completed even on failure
             self.state = self.STATE_COMPLETED
             self._notify_js(f"window.onBatchFailed({json.dumps({'message': _friendly_error(e), 'wav_path': wav_path or ''})})")
             self._notify_js(f"window.onError({json.dumps(_friendly_error(e))})")
             self.start_background_scanning()
 
-    def _upload_audio_to_fibery(self, wav_path: str, session: "RecordingSession" = None) -> bool:
+    def _upload_audio_to_fibery(self, wav_path: str, session: "RecordingSession" = None, session_token: int = None) -> bool:
         """Upload the audio recording to the linked Fibery entity's Files field.
 
         Returns True on success, False on failure or skip.
+        If session_token is given, UI callbacks are suppressed when the token
+        no longer matches (session was reset).
         """
         # Use session context if available (prevents entity-swap bug)
         entity = session.context.entity if session else self._validated_entity
         client = session.context.fibery_client if session else self._fibery_client
         is_uploaded_file = session.context.is_uploaded_file if session else False
+
+        def _stale():
+            return session_token is not None and self._session_token != session_token
 
         if not entity or not client:
             return False
@@ -1104,9 +1133,10 @@ class FiberyTranscriptApp:
             logger.info("Audio upload already in-flight, skipping")
             return False
         try:
-            self._notify_js(
-                'window.onProcessingProgress("Uploading audio to Fibery...")'
-            )
+            if not _stale():
+                self._notify_js(
+                    'window.onProcessingProgress("Uploading audio to Fibery...")'
+                )
             file_path = Path(wav_path)
             file_meta = client.upload_file(file_path)
             file_id = file_meta["fibery/id"]
@@ -1114,7 +1144,8 @@ class FiberyTranscriptApp:
             if results:
                 results.finish_audio_upload()
             logger.info("Audio file uploaded to Fibery: %s", file_path.name)
-            self._notify_js("window.onAudioUploadedToFibery()")
+            if not _stale():
+                self._notify_js("window.onAudioUploadedToFibery()")
 
             # Cleanup: for recorded files (not browsed), delete WAV, keep OGG
             if not is_uploaded_file:
@@ -1132,9 +1163,10 @@ class FiberyTranscriptApp:
             if results:
                 results.finish_audio_upload()
             logger.error("Failed to upload audio to Fibery: %s", e)
-            self._notify_js(
-                f"window.onAudioUploadError({json.dumps(_friendly_error(e))})"
-            )
+            if not _stale():
+                self._notify_js(
+                    f"window.onAudioUploadError({json.dumps(_friendly_error(e))})"
+                )
             return False
 
     def _copy_compressed_to_recordings(self, wav_path: str, compressed_path: str = None) -> None:
@@ -1187,12 +1219,15 @@ class FiberyTranscriptApp:
             )
 
     def retry_send_transcript(self) -> dict:
-        """Retry sending transcript to Fibery (called by UI retry button)."""
+        """Retry sending transcript to Fibery (called by UI retry button).
+
+        Prefers the currently selected entity over the frozen session entity,
+        so the user can re-link a new meeting and retry.
+        """
         if not self._session:
             return {"success": False, "error": "No active session"}
-        ctx = self._session.context
-        entity = ctx.entity or self._validated_entity
-        client = ctx.fibery_client or self._fibery_client
+        entity = self._validated_entity or self._session.context.entity
+        client = self._fibery_client or self._session.context.fibery_client
         if not entity or not client:
             return {"success": False, "error": "No Fibery entity linked"}
         if not self._session.results.try_start_transcript_send():
@@ -1215,7 +1250,11 @@ class FiberyTranscriptApp:
             return {"success": False, "error": _friendly_error(e)}
 
     def retry_audio_upload(self) -> dict:
-        """Retry uploading audio to Fibery (called by UI retry button)."""
+        """Retry uploading audio to Fibery (called by UI retry button).
+
+        Always uses the currently validated entity/client so retries route
+        consistently even after re-linking a different meeting.
+        """
         if not self._session:
             return {"success": False, "error": "No active session"}
         wav_path = self._session.context.wav_path
@@ -1223,17 +1262,35 @@ class FiberyTranscriptApp:
             return {"success": False, "error": "No recording available"}
         if not Path(wav_path).exists():
             return {"success": False, "error": "Recording file was deleted. Cannot retry upload."}
-        self._upload_audio_to_fibery(wav_path, self._session)
+        entity = self._validated_entity or self._session.context.entity
+        client = self._fibery_client or self._session.context.fibery_client
+        if not entity or not client:
+            return {"success": False, "error": "No Fibery entity linked"}
+        # Build a proxy session targeting the current entity
+        retry_session = RecordingSession(SessionContext(
+            entity=entity,
+            fibery_client=client,
+            entity_context=self._entity_context,
+            wav_path=wav_path,
+            compressed_path=self._session.context.compressed_path,
+            is_uploaded_file=self._session.context.is_uploaded_file,
+        ))
+        retry_session.results = self._session.results
+        self._upload_audio_to_fibery(wav_path, retry_session)
         return {"success": True}
 
-    def _auto_send_transcript(self, entity, fibery_client, session: "RecordingSession" = None) -> None:
+    def _auto_send_transcript(self, entity, fibery_client, session: "RecordingSession" = None, session_token: int = None) -> None:
         """Send the current transcript to the Fibery Transcript field (background thread).
 
         Args:
             entity: The FiberyEntity to send to.
             fibery_client: The FiberyClient to use.
             session: If provided, reads transcript from session.results and marks sent.
+            session_token: If provided, UI callbacks are suppressed when stale.
         """
+        def _stale():
+            return session_token is not None and self._session_token != session_token
+
         results = session.results if session else None
 
         if results:
@@ -1260,15 +1317,17 @@ class FiberyTranscriptApp:
             fibery_client.update_transcript_only(entity, transcript_text)
             if results:
                 results.finish_transcript_send(success=True)
-            self._notify_js("window.onTranscriptSentToFibery()")
+            if not _stale():
+                self._notify_js("window.onTranscriptSentToFibery()")
             logger.info("Transcript auto-sent to Fibery")
         except Exception as exc:
             if results:
                 results.finish_transcript_send(success=False)
             logger.error("Auto-send transcript to Fibery failed: %s", exc)
-            self._notify_js(
-                f"window.onTranscriptSendError({json.dumps(_friendly_error(exc))})"
-            )
+            if not _stale():
+                self._notify_js(
+                    f"window.onTranscriptSendError({json.dumps(_friendly_error(exc))})"
+                )
 
     # --- Fibery Integration ---
 
@@ -1301,6 +1360,10 @@ class FiberyTranscriptApp:
         if not name:
             return {'success': False, 'error': 'Meeting name is required'}
 
+        # Block before creating the entity to avoid orphans in Fibery
+        if self.state == self.STATE_PROCESSING:
+            return {'success': False, 'error': 'Cannot change meeting while processing is active. Please wait until processing completes.'}
+
         try:
             client = FiberyClient(
                 api_token=get_key('fibery_api_token'),
@@ -1316,12 +1379,12 @@ class FiberyTranscriptApp:
 
             entity_url = client.get_entity_url(entity)
 
-            # Block re-linking during recording/processing — frozen session holds
-            # a reference to the old client; closing it would break lock refresh,
-            # transcript send, and audio upload on the background thread.
-            if self.state in (self.STATE_RECORDING, self.STATE_PROCESSING):
-                client.close()
-                return {'success': False, 'error': 'Cannot change meeting while recording or processing is active. Please wait until processing completes.'}
+            # Release lock on old entity before switching (during recording)
+            if self.state == self.STATE_RECORDING and self._validated_entity:
+                try:
+                    self.release_recording_lock()
+                except Exception:
+                    logger.debug("Failed to release old lock on meeting switch", exc_info=True)
 
             # Close old client before caching new one (prevents session leak)
             if self._fibery_client and self._fibery_client is not client:
@@ -1391,11 +1454,17 @@ class FiberyTranscriptApp:
             name = client.get_entity_name(entity)
             logger.info("Validated Fibery entity: %s/%s - %s", entity.space, entity.database, name)
 
-            # Block re-linking during recording/processing — frozen session holds
-            # a reference to the old client; closing it would break background work.
-            if self.state in (self.STATE_RECORDING, self.STATE_PROCESSING):
+            # Block re-linking during processing — background threads depend on frozen session.
+            if self.state == self.STATE_PROCESSING:
                 client.close()
-                return {"success": False, "error": "Cannot change meeting while recording or processing is active. Please wait until processing completes."}
+                return {"success": False, "error": "Cannot change meeting while processing is active. Please wait until processing completes."}
+
+            # Release lock on old entity before switching (during recording)
+            if self.state == self.STATE_RECORDING and self._validated_entity:
+                try:
+                    self.release_recording_lock()
+                except Exception:
+                    logger.debug("Failed to release old lock on meeting switch", exc_info=True)
 
             # Close old client before caching new one (prevents session leak)
             if self._fibery_client and self._fibery_client is not client:
@@ -1416,11 +1485,22 @@ class FiberyTranscriptApp:
                     daemon=True,
                 ).start()
 
-            # If audio storage is Fibery and we have a recording, upload it now
+            # If audio storage is Fibery and we have a recording, upload it now.
+            # Build a proxy session with the NEW entity so audio lands on the
+            # same target as the transcript (unified post-hoc routing).
             if self.settings.audio_storage == "fibery" and self._session and self._session.context.wav_path:
+                upload_session = RecordingSession(SessionContext(
+                    entity=entity,
+                    fibery_client=client,
+                    entity_context=self._entity_context,
+                    wav_path=self._session.context.wav_path,
+                    compressed_path=self._session.context.compressed_path,
+                    is_uploaded_file=self._session.context.is_uploaded_file,
+                ))
+                upload_session.results = self._session.results
                 threading.Thread(
                     target=self._upload_audio_to_fibery,
-                    args=(self._session.context.wav_path, self._session),
+                    args=(self._session.context.wav_path, upload_session),
                     daemon=True,
                 ).start()
 

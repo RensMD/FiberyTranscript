@@ -230,6 +230,7 @@ class ApiBridge:
         "display_name": str,
         "company_context": str,
         "audio_storage": str,
+        "default_panel_page": str,
     }
 
     def save_settings(self, settings_dict: dict) -> dict:

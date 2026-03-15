@@ -33,6 +33,9 @@ class Settings:
     # User identity (for recording lock)
     display_name: str = ""
 
+    # Default page URL for the Fibery entity panel
+    default_panel_page: str = ""
+
     @classmethod
     def load(cls, path: Path) -> "Settings":
         """Load settings from JSON file, or return defaults if not found."""

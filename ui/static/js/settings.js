@@ -69,9 +69,13 @@ class SettingsManager {
 
     close() {
         this.overlay.classList.remove('open');
+        // Discard unsaved "Clear" actions so they don't leak into a later save
+        this._pendingClears.clear();
     }
 
     async loadCurrentSettings() {
+        // Reset stale clears from a previous open that was cancelled
+        this._pendingClears.clear();
         try {
             const settings = await window.pywebview.api.get_settings();
             document.getElementById('autoStart').checked = settings.auto_start_on_boot || false;
@@ -84,6 +88,7 @@ class SettingsManager {
             this.recordingsDirInput.placeholder = settings.default_recordings_dir || 'Default location';
             this._toggleRecordingsDirRow();
             document.getElementById('defaultAudioStorage').value = settings.audio_storage || 'local';
+            document.getElementById('defaultPanelPage').value = settings.default_panel_page || '';
 
             // Gemini model settings
             document.getElementById('settingsGeminiModel').value = settings.gemini_model || '';
@@ -133,6 +138,7 @@ class SettingsManager {
             gemini_model_cleanup: geminiCleanup,
             company_context: document.getElementById('settingsCompanyContext').value,
             audio_storage: document.getElementById('defaultAudioStorage').value,
+            default_panel_page: document.getElementById('defaultPanelPage').value.trim(),
         };
 
         try {

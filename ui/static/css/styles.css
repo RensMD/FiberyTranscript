@@ -459,19 +459,19 @@ select.device-warning-yellow:focus {
     align-items: center;
     gap: 8px;
     align-self: flex-start;
-    background: var(--bg-surface, var(--bg-secondary));
-    border: 1px dashed var(--border);
-    color: var(--text-secondary);
-    padding: 8px 16px;
+    background: var(--accent);
+    border: none;
+    color: white;
+    padding: 10px 24px;
     border-radius: var(--radius-sm);
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 600;
     cursor: pointer;
-    transition: border-color var(--transition), color var(--transition);
+    transition: background 0.3s ease;
 }
 
 .upload-btn:hover {
-    border-color: var(--accent);
-    color: var(--accent);
+    background: var(--accent-hover);
 }
 
 .upload-file-info {
@@ -705,6 +705,7 @@ textarea {
     width: 100%;
     resize: vertical;
     line-height: 1.5;
+    overflow-y: hidden;
 }
 
 textarea:focus {

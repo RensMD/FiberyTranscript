@@ -74,11 +74,11 @@ const retryBatchBtn = document.getElementById('retryBatchBtn');
 const continueRecordingBanner = document.getElementById('continueRecordingBanner');
 const continueRecordingBtn = document.getElementById('continueRecordingBtn');
 
-// Open entity link in external browser (pywebview doesn't support target=_blank)
+// Open entity link in the in-app Fibery panel
 document.getElementById('entityLink').addEventListener('click', (e) => {
     e.preventDefault();
     if (currentEntityUrl) {
-        window.pywebview.api.open_url(currentEntityUrl);
+        window.pywebview.api.navigate_entity_panel(currentEntityUrl);
     }
 });
 
@@ -385,9 +385,18 @@ window.onAudioUploadedToFibery = function() {
 };
 
 window.onAudioUploadError = function(message) {
-    showToast('Audio upload to Fibery failed: ' + message, 'warning', 8000);
+    const isEntityDeleted = message && (message.includes('not found') || message.includes('Not found'));
+    if (isEntityDeleted) {
+        showToast('Meeting was deleted in Fibery. Select a new meeting and retry the upload.', 'error', 10000);
+    } else {
+        showToast('Audio upload to Fibery failed: ' + message, 'warning', 8000);
+    }
     retryAudioUploadBtn.style.display = '';
     retryRow.classList.remove('hidden');
+    // Reset button text (may be stuck on "Uploading audio to Fibery...")
+    if (recordBtn.classList.contains('completed')) {
+        recordBtnText.textContent = 'Done';
+    }
 };
 
 // === Audio Health ===
@@ -727,9 +736,9 @@ function resetFiberyValidation() {
 }
 
 changeLinkBtn.addEventListener('click', async () => {
-    // Block meeting changes during recording/processing
-    if (isRecording || recordBtn.classList.contains('processing')) {
-        showToast('Cannot change meeting while recording or processing.', 'warning');
+    // Block meeting changes during processing (allowed during recording)
+    if (recordBtn.classList.contains('processing')) {
+        showToast('Cannot change meeting while processing.', 'warning');
         return;
     }
     await window.pywebview.api.deselect_meeting();
@@ -750,6 +759,10 @@ changeLinkBtn.addEventListener('click', async () => {
     updateAudioStorageState();
     // Re-collapse audio storage when meeting deselected
     audioStorageCollapsible.classList.add('collapsed');
+    // Show warning if deselected during recording
+    if (isRecording) {
+        fiberyMissingWarning.classList.remove('hidden');
+    }
 });
 
 function setFiberyValidateStatus(text, type) {
@@ -796,6 +809,9 @@ async function resetSession() {
     // Full reset: clear Python session data (transcript, summary, state)
     await window.pywebview.api.reset_session();
     resetFiberyValidation();
+
+    // Clear transcript DOM so stale data cannot leak into the next session
+    window.transcriptManager.clear();
 
     // Reset audio storage to settings default
     const defaultStorage = window._defaultAudioStorage || 'local';
@@ -935,9 +951,18 @@ async function startRecording() {
                     return;
                 }
             }
-            await window.pywebview.api.acquire_recording_lock();
+            // Fail closed: abort recording if lock cannot be acquired
+            await callApi('acquire_recording_lock');
         } catch (err) {
-            console.warn('Recording lock check failed, proceeding anyway:', err);
+            isRecording = false;
+            setStatus('', '');
+            stopTimer();
+            recordingMetaCollapsible.classList.add('collapsed');
+            uploadCollapsible.classList.remove('collapsed');
+            audioStorageCollapsible.classList.add('collapsed');
+            sendPanelCollapsible.classList.add('collapsed');
+            showToast('Could not acquire recording lock: ' + err, 'error');
+            return;
         }
     }
 
@@ -1197,9 +1222,18 @@ window.onTranscriptSentToFibery = function() {
 };
 
 window.onTranscriptSendError = function(message) {
-    showToast('Could not send transcript to Fibery: ' + message, 'warning', 8000);
+    const isEntityDeleted = message && (message.includes('not found') || message.includes('Not found'));
+    if (isEntityDeleted) {
+        showToast('Meeting was deleted in Fibery. Select a new meeting and retry.', 'error', 10000);
+    } else {
+        showToast('Could not send transcript to Fibery: ' + message, 'warning', 8000);
+    }
     retryTranscriptBtn.style.display = '';
     retryRow.classList.remove('hidden');
+    // Reset button text if stuck
+    if (recordBtn.classList.contains('completed')) {
+        recordBtnText.textContent = 'Done';
+    }
 };
 
 // === Summarize (step 3) ===

@@ -46,7 +46,7 @@ def main():
 
     # Create entity side panel (attached to main window)
     from ui.entity_panel import EntityPanel
-    app.entity_panel = EntityPanel(window)
+    app.entity_panel = EntityPanel(window, settings=app.settings)
 
     # Start power monitoring for sleep/wake detection
     from utils.power_monitor import create_power_monitor
@@ -60,8 +60,12 @@ def main():
 
     def _on_closing():
         """Conditionally show quit confirmation, or minimize to tray."""
-        # Minimize to tray instead of closing, unless shutting down
-        if app.settings.minimize_to_tray_on_close and not app._is_shutting_down:
+        # Consume the tray-quit flag so it doesn't persist after a cancelled dialog
+        tray_quit = getattr(app, '_tray_quit_requested', False)
+        app._tray_quit_requested = False
+
+        # Minimize to tray instead of closing, unless shutting down or tray-quit
+        if app.settings.minimize_to_tray_on_close and not app._is_shutting_down and not tray_quit:
             window.hide()
             return False  # Prevent window destruction
 
@@ -116,22 +120,22 @@ def _setup_tray(app, window):
             window.restore()
 
         def on_quit():
-            # Warn if unsent work would be lost
+            # Set flag so _on_closing() bypasses minimize-to-tray.
+            # The flag is consumed (cleared) inside _on_closing() so it
+            # doesn't persist if the user cancels a confirmation dialog.
+            app._tray_quit_requested = True
+
             if app.needs_close_confirmation:
                 # Show window so user can see the state before deciding
                 window.show()
                 window.restore()
-                # The native close flow (with confirm_close=True) will handle the dialog
-                window.confirm_close = True
-                # Trigger the window close, which will show the confirmation dialog
-                try:
-                    window.destroy()
-                except Exception:
-                    pass
-                return
-            # Clean up
-            app.begin_shutdown()
-            window.destroy()
+            else:
+                app.begin_shutdown()
+
+            try:
+                window.destroy()
+            except Exception:
+                pass
 
         def on_toggle_recording():
             if app.state == FiberyTranscriptApp.STATE_RECORDING:
