@@ -59,7 +59,12 @@ def main():
         app._power_monitor = power_monitor
 
     def _on_closing():
-        """Conditionally show quit confirmation, then shut down."""
+        """Conditionally show quit confirmation, or minimize to tray."""
+        # Minimize to tray instead of closing, unless shutting down
+        if app.settings.minimize_to_tray_on_close and not app._is_shutting_down:
+            window.hide()
+            return False  # Prevent window destruction
+
         if app.needs_close_confirmation:
             # Enable the native confirm dialog; pywebview checks this
             # right after the closing event, so toggling it here works.

@@ -59,6 +59,7 @@ class SettingsManager {
         try {
             const settings = await window.pywebview.api.get_settings();
             document.getElementById('autoStart').checked = settings.auto_start_on_boot || false;
+            document.getElementById('minimizeToTray').checked = settings.minimize_to_tray_on_close || false;
             this.saveRecordingsCheckbox.checked = settings.save_recordings !== false;
             document.getElementById('themeSelect').value = settings.theme || 'dark';
             document.body.setAttribute('data-theme', settings.theme || 'dark');
@@ -106,6 +107,7 @@ class SettingsManager {
         const geminiCleanup = document.getElementById('settingsGeminiCleanup').value.trim();
         const settings = {
             auto_start_on_boot: document.getElementById('autoStart').checked,
+            minimize_to_tray_on_close: document.getElementById('minimizeToTray').checked,
             save_recordings: this.saveRecordingsCheckbox.checked,
             recordings_dir: this.recordingsDirInput.value,
             theme: document.getElementById('themeSelect').value,
