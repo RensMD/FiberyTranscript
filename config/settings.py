@@ -43,7 +43,7 @@ class Settings:
                 known_fields = cls.__dataclass_fields__
                 filtered = {k: v for k, v in data.items() if k in known_fields}
                 return cls(**filtered)
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, AttributeError):
                 return cls()
         return cls()
 
