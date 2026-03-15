@@ -910,9 +910,10 @@ class FiberyTranscriptApp:
 
         except Exception as e:
             logger.error("Batch processing failed: %s", e)
+            self._is_uploaded_file = False
             # Mark as completed even on failure
             self.state = self.STATE_COMPLETED
-            self._notify_js("window.onProcessingComplete()")
+            self._notify_js(f"window.onBatchFailed({json.dumps({'message': _friendly_error(e), 'wav_path': self._last_wav_path or ''})})")
             self._notify_js(f"window.onError({json.dumps(_friendly_error(e))})")
             self.start_background_scanning()
 

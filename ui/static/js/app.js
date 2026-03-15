@@ -973,6 +973,16 @@ window.onError = function(message) {
     newMeetingBtn.classList.remove('hidden');
 };
 
+window.onBatchFailed = function(info) {
+    setStatus('', '');
+    sendActions.classList.remove('visible');
+    uploadCollapsible.classList.remove('collapsed');
+    if (info.wav_path) {
+        showToast('Your recording was saved. You can retry via Upload.', 'info', 10000);
+    }
+    newMeetingBtn.classList.remove('hidden');
+};
+
 // === Silence Auto-Stop ===
 
 window.onSilenceCountdownStart = function(seconds) {
