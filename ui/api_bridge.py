@@ -444,7 +444,9 @@ class ApiBridge:
         from config.keystore import save_all_keys
         try:
             success = save_all_keys(keys)
-            return {"success": success}
+            if not success:
+                return {"success": True, "warning": "API keys could not be saved to your system keychain. They may not persist after restart."}
+            return {"success": True}
         except Exception as e:
             logger.error("Failed to save API keys: %s", e)
             return {"success": False, "error": str(e)}

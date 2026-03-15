@@ -136,7 +136,10 @@ class SettingsManager {
             if (gem) keys.gemini_api_key = gem;
             if (fib) keys.fibery_api_token = fib;
             if (Object.keys(keys).length > 0) {
-                await window.pywebview.api.save_api_keys(keys);
+                const result = await window.pywebview.api.save_api_keys(keys);
+                if (result.warning) {
+                    showToast(result.warning, 'warning', 8000);
+                }
             }
 
             this.close();
