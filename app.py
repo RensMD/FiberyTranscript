@@ -1005,6 +1005,18 @@ class FiberyTranscriptApp:
             if ctx.is_uploaded_file and self.settings.save_recordings:
                 self._copy_compressed_to_recordings(wav_path, compressed_path)
 
+            # Clean up local recordings if user opted out of local storage
+            if not ctx.is_uploaded_file and not self.settings.save_recordings:
+                wav = Path(wav_path)
+                ogg = wav.with_suffix('.ogg')
+                for f in (wav, ogg):
+                    if f.exists():
+                        try:
+                            f.unlink()
+                            logger.info("Cleaned up local recording: %s", f.name)
+                        except OSError as e:
+                            logger.warning("Could not delete %s: %s", f.name, e)
+
             self.start_background_scanning()
             logger.info("Batch processing complete: %d utterances", len(result["utterances"]))
 
