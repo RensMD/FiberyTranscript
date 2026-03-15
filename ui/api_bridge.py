@@ -36,9 +36,13 @@ class ApiBridge:
 
     def refresh_audio_devices(self) -> dict:
         """Re-initialize audio backends and return fresh device list."""
-        capture = self._app.audio_capture
-        capture.reinitialize()
-        return self.get_audio_devices()
+        try:
+            capture = self._app.audio_capture
+            capture.reinitialize()
+            return self.get_audio_devices()
+        except Exception as e:
+            logger.error("Failed to refresh audio devices: %s", e)
+            return {"microphones": [], "loopbacks": [], "error": str(e)}
 
     # --- Level Monitoring ---
 
