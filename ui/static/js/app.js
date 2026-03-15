@@ -1198,10 +1198,26 @@ copySummaryBtn.addEventListener('click', () => {
 // === Device Auto-Refresh ===
 setInterval(async () => {
     if (!isRecording && !recordBtn.classList.contains('processing') && !recordBtn.classList.contains('completed')) {
-        const currentMic = micSelect.value;
-        const currentLoop = loopbackSelect.value;
-        await loadDevices();
-        if (micSelect.querySelector(`option[value="${currentMic}"]`)) micSelect.value = currentMic;
-        if (loopbackSelect.querySelector(`option[value="${currentLoop}"]`)) loopbackSelect.value = currentLoop;
+        const prevMic = micSelect.value;
+        const prevLoop = loopbackSelect.value;
+        try {
+            const devices = await window.pywebview.api.get_audio_devices();
+            // Guard: if refresh returns error or empty, keep existing options
+            if (devices.error || (devices.microphones.length === 0 && devices.loopbacks.length === 0)) {
+                console.warn('Device refresh returned error or empty, keeping current list');
+                return;
+            }
+            await loadDevices();
+        } catch (err) {
+            console.warn('Device refresh failed, keeping current list:', err);
+            return;
+        }
+        // Restore previous selection if still available
+        if (prevMic && micSelect.querySelector(`option[value="${prevMic}"]`)) {
+            micSelect.value = prevMic;
+        }
+        if (prevLoop && loopbackSelect.querySelector(`option[value="${prevLoop}"]`)) {
+            loopbackSelect.value = prevLoop;
+        }
     }
 }, 10000);
