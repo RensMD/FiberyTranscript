@@ -265,6 +265,15 @@ class ApiBridge:
             logger.error("Recording lock acquire failed: %s", e)
             return {"success": False, "error": str(e)}
 
+    def release_recording_lock(self) -> dict:
+        """Release the recording lock for the current entity."""
+        try:
+            self._app.release_recording_lock()
+            return {"success": True}
+        except Exception as e:
+            logger.error("Recording lock release failed: %s", e)
+            return {"success": False, "error": str(e)}
+
     # --- Fibery ---
 
 

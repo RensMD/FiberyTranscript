@@ -99,6 +99,9 @@ class FiberyTranscriptApp:
         self._power_monitor = None
         self._stopped_by_sleep: bool = False
 
+        # Lock refresh tracking (refresh every 10 min during long recordings)
+        self._last_lock_refresh: float = 0.0
+
         # Stashed results from previous recording segment (for continue-after-sleep)
         self._previous_batch_result: Optional[dict] = None
         self._previous_cleaned_transcript: Optional[str] = None
@@ -148,37 +151,63 @@ class FiberyTranscriptApp:
         return self.settings.display_name.strip() or getpass.getuser()
 
     def _build_lock_value(self) -> str:
+        import socket
         from datetime import datetime, timezone
-        return f"{self._get_display_name()}|{datetime.now(timezone.utc).isoformat()}"
+        name = self._get_display_name()
+        host = socket.gethostname()
+        return f"{name}@{host}|{datetime.now(timezone.utc).isoformat()}"
+
+    def _parse_lock(self, raw: str):
+        """Parse lock string into (display_name, hostname, timestamp_or_None).
+
+        Supports v2 format: "Name@Host|ISO-timestamp"
+        and legacy formats: "Name|ISO-timestamp" or "Name"
+        """
+        from datetime import datetime
+        raw = raw.strip()
+        timestamp = None
+        if "|" in raw:
+            identity, ts_str = raw.rsplit("|", 1)
+            try:
+                timestamp = datetime.fromisoformat(ts_str)
+            except (ValueError, TypeError):
+                pass
+        else:
+            identity = raw
+
+        if "@" in identity:
+            name, host = identity.rsplit("@", 1)
+        else:
+            name, host = identity, ""  # legacy or Phase 1 lock
+
+        return name.strip(), host.strip(), timestamp
 
     def check_recording_lock(self) -> dict:
         if not self._validated_entity or not self._fibery_client:
             return {"locked": False}
         try:
+            import socket
+            from datetime import datetime, timezone, timedelta
             lock_val = self._fibery_client.get_recording_lock(self._validated_entity)
             if not lock_val:
                 return {"locked": False}
 
-            # Parse lock value: "DisplayName|ISO-timestamp" or legacy "DisplayName"
-            raw = lock_val.strip()
-            if "|" in raw:
-                name, timestamp_str = raw.rsplit("|", 1)
-                name = name.strip()
-                # Treat locks older than 4 hours as stale
-                try:
-                    from datetime import datetime, timezone, timedelta
-                    lock_time = datetime.fromisoformat(timestamp_str)
-                    if datetime.now(timezone.utc) - lock_time > timedelta(hours=4):
-                        logger.info("Stale recording lock from %s (set %s), ignoring", name, timestamp_str)
-                        return {"locked": False}
-                except (ValueError, TypeError):
-                    pass  # Unparseable timestamp — treat as active lock
-            else:
-                name = raw
+            name, host, timestamp = self._parse_lock(lock_val)
 
-            if name == self._get_display_name():
+            # Treat locks older than 30 minutes as stale
+            if timestamp is not None:
+                if datetime.now(timezone.utc) - timestamp > timedelta(minutes=30):
+                    logger.info("Stale recording lock from %s@%s (set %s), ignoring", name, host, timestamp)
+                    return {"locked": False}
+
+            # Belongs to self if name AND hostname match
+            my_name = self._get_display_name()
+            my_host = socket.gethostname()
+            if name == my_name and (not host or host == my_host):
                 return {"locked": False}
-            return {"locked": True, "locked_by": name}
+
+            locked_by = f"{name}@{host}" if host else name
+            return {"locked": True, "locked_by": locked_by}
         except Exception as e:
             logger.warning("Recording lock check failed: %s", e)
             return {"locked": False, "error": str(e)}
@@ -199,6 +228,15 @@ class FiberyTranscriptApp:
         if not self._validated_entity or not self._fibery_client:
             return
         try:
+            import socket
+            current = self._fibery_client.get_recording_lock(self._validated_entity)
+            if current:
+                name, host, _ = self._parse_lock(current)
+                my_name = self._get_display_name()
+                my_host = socket.gethostname()
+                if name != my_name or (host and host != my_host):
+                    logger.info("Lock belongs to %s@%s, not releasing", name, host)
+                    return
             self._fibery_client.clear_recording_lock(self._validated_entity)
         except Exception as e:
             logger.warning("Failed to release recording lock: %s", e)
@@ -718,6 +756,18 @@ class FiberyTranscriptApp:
         if now - self._last_silence_check < 1.0:
             return
         self._last_silence_check = now
+
+        # Refresh lock every 10 minutes to prevent staleness during long recordings
+        if self._validated_entity and self._fibery_client:
+            if now - self._last_lock_refresh > 600:  # 10 minutes
+                self._last_lock_refresh = now
+                try:
+                    self._fibery_client.set_recording_lock(
+                        self._validated_entity, self._build_lock_value()
+                    )
+                    logger.debug("Recording lock refreshed")
+                except Exception:
+                    logger.debug("Lock refresh failed", exc_info=True)
 
         both_silent = (self._last_mic_level < self._SILENCE_THRESHOLD
                        and self._last_sys_level < self._SILENCE_THRESHOLD)
