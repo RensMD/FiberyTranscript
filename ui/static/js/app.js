@@ -463,9 +463,14 @@ refreshDevicesBtn.addEventListener('click', async () => {
 // === Step 1: Fibery Meeting Selection ===
 
 // Panel URL change callback (called from Python via SourceChanged)
+let _pendingDisambiguationRevalidate = false;
 window.onPanelUrlChanged = function(url) {
     panelCurrentUrl = url;
     updateSelectButtonState();
+    if (_pendingDisambiguationRevalidate) {
+        _pendingDisambiguationRevalidate = false;
+        selectMeetingFromPanel();
+    }
 };
 
 function looksLikeFiberyEntity(url) {
@@ -556,8 +561,10 @@ async function selectMeetingFromPanel() {
                 btn.innerHTML = `<span class="entity-name">${candidate.entity_name}</span><span class="entity-db">${candidate.database}</span>`;
                 btn.addEventListener('click', async () => {
                     fiberyDisambiguation.classList.add('hidden');
-                    await window.pywebview.api.navigate_entity_panel(candidate.url);
-                    setTimeout(() => selectMeetingFromPanel(), 500);
+                    await callApi('navigate_entity_panel', candidate.url);
+                    _pendingDisambiguationRevalidate = true;
+                    // Safety timeout: clear flag after 3s if panel never fires
+                    setTimeout(() => { _pendingDisambiguationRevalidate = false; }, 3000);
                 });
                 disambigOptions.appendChild(btn);
             });
