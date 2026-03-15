@@ -1176,6 +1176,8 @@ copyTranscriptBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(text).then(() => {
             copyTranscriptBtn.textContent = 'Copied!';
             setTimeout(() => { copyTranscriptBtn.textContent = 'Copy Transcript'; }, 2000);
+            // Notify Python for close-confirmation logic
+            window.pywebview.api.mark_transcript_copied();
         });
     }
 });

@@ -445,6 +445,16 @@ class ApiBridge:
             logger.error("Failed to save API keys: %s", e)
             return {"success": False, "error": str(e)}
 
+    def mark_transcript_copied(self) -> dict:
+        """Called by JS when the user copies the transcript (for close-confirmation logic)."""
+        try:
+            if self._app._session:
+                self._app._session.results.set_user_has_copied()
+            return {"success": True}
+        except Exception as e:
+            logger.error("mark_transcript_copied failed: %s", e)
+            return {"success": False, "error": str(e)}
+
     # --- State ---
 
     def get_session_state(self) -> str:
