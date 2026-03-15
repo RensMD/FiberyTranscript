@@ -175,8 +175,18 @@ class FiberyTranscriptApp:
         else:
             identity = raw
 
+        # Only split on '@' if this looks like a v2 lock (identity has host segment).
+        # A legacy lock written before v2 may have an email address as the name;
+        # we must not confuse the domain part for a hostname.
+        # Heuristic: v2 identity ends with a plain hostname (no dots), legacy names
+        # with '@' are email addresses and contain dots in the right-hand side.
         if "@" in identity:
-            name, host = identity.rsplit("@", 1)
+            name_part, host_part = identity.rsplit("@", 1)
+            # Accept as host only if it looks like a plain hostname (no dots)
+            if "." not in host_part:
+                name, host = name_part, host_part
+            else:
+                name, host = identity, ""  # treat as legacy email-style name
         else:
             name, host = identity, ""  # legacy or Phase 1 lock
 

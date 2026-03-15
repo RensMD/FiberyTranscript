@@ -993,6 +993,9 @@ window.onBatchFailed = function(info) {
         showToast('Your recording was saved. You can retry via Upload.', 'info', 10000);
     }
     newMeetingBtn.classList.remove('hidden');
+    // Resume idle monitoring (same as onProcessingComplete)
+    startMonitoring();
+    window.pywebview.api.start_background_scanning();
 };
 
 // === Silence Auto-Stop ===
