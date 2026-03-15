@@ -37,8 +37,9 @@ def _get_cache_dir():
 
 
 class EntityPanel:
-    def __init__(self, main_window):
+    def __init__(self, main_window, settings=None):
         self._main = main_window
+        self._settings = settings
         self._split = None          # WinForms SplitContainer
         self._panel_wv = None       # second WebView2 control
         self._original_width = None
@@ -89,8 +90,11 @@ class EntityPanel:
         form.Invoke(Func[Type](lambda: self._build_panel(form, url)))
 
     def open_default(self):
-        """Open the panel with the default My Work view."""
-        self.open(_DEFAULT_URL)
+        """Open the panel with the configured default page, or the workspace root."""
+        url = _DEFAULT_URL
+        if self._settings and self._settings.default_panel_page:
+            url = self._settings.default_panel_page
+        self.open(url)
 
     def close(self):
         """Remove the Fibery panel and restore the original window size."""

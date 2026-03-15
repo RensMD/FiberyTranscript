@@ -36,9 +36,13 @@ class ApiBridge:
 
     def refresh_audio_devices(self) -> dict:
         """Re-initialize audio backends and return fresh device list."""
-        capture = self._app.audio_capture
-        capture.reinitialize()
-        return self.get_audio_devices()
+        try:
+            capture = self._app.audio_capture
+            capture.reinitialize()
+            return self.get_audio_devices()
+        except Exception as e:
+            logger.error("Failed to refresh audio devices: %s", e)
+            return {"microphones": [], "loopbacks": [], "error": str(e)}
 
     # --- Level Monitoring ---
 
@@ -226,6 +230,7 @@ class ApiBridge:
         "display_name": str,
         "company_context": str,
         "audio_storage": str,
+        "default_panel_page": str,
     }
 
     def save_settings(self, settings_dict: dict) -> dict:
@@ -241,6 +246,17 @@ class ApiBridge:
                     continue
                 setattr(self._app.settings, key, value)
             self._app.save_settings()
+            # Apply autostart if it was changed
+            autostart_warning = None
+            if 'auto_start_on_boot' in settings_dict:
+                from utils.autostart import set_autostart
+                new_autostart = self._app.settings.auto_start_on_boot
+                if not set_autostart(new_autostart):
+                    action = "enable" if new_autostart else "disable"
+                    logger.warning("Failed to %s autostart", action)
+                    autostart_warning = f"Settings saved, but failed to {action} start-on-boot. You may need to configure this manually in your OS settings."
+            if autostart_warning:
+                return {"success": True, "warning": autostart_warning}
             return {"success": True}
         except Exception as e:
             logger.error("Failed to save settings: %s", e)
@@ -265,9 +281,34 @@ class ApiBridge:
             logger.error("Recording lock acquire failed: %s", e)
             return {"success": False, "error": str(e)}
 
+    def release_recording_lock(self) -> dict:
+        """Release the recording lock for the current entity."""
+        try:
+            self._app.release_recording_lock()
+            return {"success": True}
+        except Exception as e:
+            logger.error("Recording lock release failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    # --- Retry ---
+
+    def retry_send_transcript(self) -> dict:
+        """Retry sending transcript to Fibery."""
+        try:
+            return self._app.retry_send_transcript()
+        except Exception as e:
+            logger.error("Retry transcript send failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def retry_audio_upload(self) -> dict:
+        """Retry uploading audio to Fibery."""
+        try:
+            return self._app.retry_audio_upload()
+        except Exception as e:
+            logger.error("Retry audio upload failed: %s", e)
+            return {"success": False, "error": str(e)}
+
     # --- Fibery ---
-
-
 
     def open_url(self, url: str) -> dict:
         """Open a URL in the default browser."""
@@ -427,13 +468,30 @@ class ApiBridge:
         }
 
     def save_api_keys(self, keys: dict) -> dict:
-        """Save API keys to the system keyring."""
-        from config.keystore import save_all_keys
+        """Save API keys to the system keyring. Use "__CLEAR__" to delete a key."""
+        from config.keystore import save_all_keys, delete_key
         try:
-            success = save_all_keys(keys)
-            return {"success": success}
+            # Handle __CLEAR__ sentinel for key deletion
+            to_delete = [k for k, v in keys.items() if v == "__CLEAR__"]
+            for key_name in to_delete:
+                delete_key(key_name)
+                del keys[key_name]
+            success = save_all_keys(keys) if keys else True
+            if not success:
+                return {"success": True, "warning": "API keys could not be saved to your system keychain. They may not persist after restart."}
+            return {"success": True}
         except Exception as e:
             logger.error("Failed to save API keys: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def mark_transcript_copied(self) -> dict:
+        """Called by JS when the user copies the transcript (for close-confirmation logic)."""
+        try:
+            if self._app._session:
+                self._app._session.results.set_user_has_copied()
+            return {"success": True}
+        except Exception as e:
+            logger.error("mark_transcript_copied failed: %s", e)
             return {"success": False, "error": str(e)}
 
     # --- State ---

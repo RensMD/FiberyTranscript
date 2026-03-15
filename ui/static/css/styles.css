@@ -26,6 +26,7 @@
     --level-green: #66bb6a;
     --level-yellow: #ffa726;
     --level-red: #ef5350;
+    --bg-hover: rgba(255, 255, 255, 0.05);
 }
 
 [data-theme="light"] {
@@ -48,6 +49,7 @@
     --level-green: #4caf50;
     --level-yellow: #ff9800;
     --level-red: #f44336;
+    --bg-hover: rgba(0, 0, 0, 0.04);
 }
 
 /* === Reset & Base === */
@@ -457,19 +459,19 @@ select.device-warning-yellow:focus {
     align-items: center;
     gap: 8px;
     align-self: flex-start;
-    background: var(--bg-surface, var(--bg-secondary));
-    border: 1px dashed var(--border);
-    color: var(--text-secondary);
-    padding: 8px 16px;
+    background: var(--accent);
+    border: none;
+    color: white;
+    padding: 10px 24px;
     border-radius: var(--radius-sm);
-    font-size: 13px;
+    font-size: 14px;
+    font-weight: 600;
     cursor: pointer;
-    transition: border-color var(--transition), color var(--transition);
+    transition: background 0.3s ease;
 }
 
 .upload-btn:hover {
-    border-color: var(--accent);
-    color: var(--accent);
+    background: var(--accent-hover);
 }
 
 .upload-file-info {
@@ -703,6 +705,7 @@ textarea {
     width: 100%;
     resize: vertical;
     line-height: 1.5;
+    overflow-y: hidden;
 }
 
 textarea:focus {
@@ -822,6 +825,37 @@ textarea::placeholder {
     align-items: center;
     gap: 12px;
 }
+.retry-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+/* Audio health indicators */
+.audio-health {
+    display: flex;
+    gap: 12px;
+    padding: 4px 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.health-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.health-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.health-dot.green { background: #22c55e; }
+.health-dot.yellow { background: #eab308; }
+.health-dot.red { background: #ef4444; }
+.health-dot.gray { background: #6b7280; }
+.health-dot.pulse { animation: pulse-dot 1s ease-in-out infinite; }
+@keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
 .copy-links {
     display: flex;
@@ -1032,6 +1066,20 @@ textarea::placeholder {
     height: 18px;
     accent-color: var(--accent);
 }
+
+.key-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.key-input-row input { flex: 1; min-width: 0; }
+.clear-key-link {
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.clear-key-link:hover { color: var(--accent); }
 
 .folder-picker {
     display: flex;

@@ -45,7 +45,7 @@ class WavRecorder:
     def start(self) -> Path:
         """Start recording to a new WAV file. Returns the file path."""
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:22]  # includes microseconds
         self._file_path = self._output_dir / f"recording_{timestamp}.wav"
 
         self._wav_file = wave.open(str(self._file_path), "wb")

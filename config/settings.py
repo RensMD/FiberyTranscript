@@ -1,6 +1,7 @@
 """Application settings with JSON persistence."""
 
 import json
+import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -32,6 +33,9 @@ class Settings:
     # User identity (for recording lock)
     display_name: str = ""
 
+    # Default page URL for the Fibery entity panel
+    default_panel_page: str = ""
+
     @classmethod
     def load(cls, path: Path) -> "Settings":
         """Load settings from JSON file, or return defaults if not found."""
@@ -42,12 +46,14 @@ class Settings:
                 known_fields = cls.__dataclass_fields__
                 filtered = {k: v for k, v in data.items() if k in known_fields}
                 return cls(**filtered)
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, AttributeError):
                 return cls()
         return cls()
 
     def save(self, path: Path) -> None:
-        """Persist settings to JSON file."""
+        """Persist settings to JSON file atomically (write-then-rename)."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = path.with_suffix('.tmp')
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, indent=2)
+        os.replace(str(tmp), str(path))

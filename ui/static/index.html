@@ -14,6 +14,7 @@
     <header class="header">
         <div class="header-left">
             <button class="new-meeting-link hidden" id="newMeetingBtn">+ New meeting</button>
+            <button class="action-btn small-btn" id="retryBatchBtn" style="display:none;">Retry Transcription</button>
         </div>
         <div class="header-right">
             <button class="icon-btn" id="settingsBtn" title="Settings">
@@ -123,6 +124,14 @@
                     <div class="level-bar-container">
                         <canvas id="sysLevelCanvas" width="400" height="6"></canvas>
                     </div>
+                </div>
+
+                <!-- Audio Health Indicators (visible during recording) -->
+                <div class="audio-health hidden" id="audioHealth">
+                    <span class="health-badge" id="healthMic"><span class="health-dot green"></span> Mic active</span>
+                    <span class="health-badge" id="healthSys"><span class="health-dot green"></span> System active</span>
+                    <span class="health-badge hidden" id="healthClipping"><span class="health-dot red pulse"></span> Clipping!</span>
+                    <span class="health-badge hidden" id="healthSilence"><span class="health-dot gray"></span> <span id="healthSilenceText">No speech</span></span>
                 </div>
 
                 <!-- Recording Controls -->
@@ -243,6 +252,10 @@
                         </div>
                         <span class="status-badge" id="summaryStatusBadge"></span>
                     </div>
+                    <div class="retry-row hidden" id="retryRow">
+                        <button class="action-btn small-btn" id="retryTranscriptBtn" style="display:none;">Retry Send Transcript</button>
+                        <button class="action-btn small-btn" id="retryAudioUploadBtn" style="display:none;">Retry Audio Upload</button>
+                    </div>
                 </div>
             </div>
         </section>
@@ -270,6 +283,10 @@
                         <input type="checkbox" id="autoStart" />
                     </div>
                     <div class="setting-row checkbox-row">
+                        <label for="minimizeToTray">Minimize to tray on close</label>
+                        <input type="checkbox" id="minimizeToTray" />
+                    </div>
+                    <div class="setting-row checkbox-row">
                         <label for="saveRecordings">Save audio recordings</label>
                         <input type="checkbox" id="saveRecordings" checked />
                     </div>
@@ -288,6 +305,10 @@
                         </select>
                     </div>
                     <div class="setting-row">
+                        <label for="defaultPanelPage">Default Panel Page</label>
+                        <input type="text" id="defaultPanelPage" placeholder="Default: Fibery workspace root" />
+                    </div>
+                    <div class="setting-row">
                         <label for="themeSelect">Theme</label>
                         <select id="themeSelect">
                             <option value="dark">Dark</option>
@@ -303,15 +324,24 @@
                     <h3>API Keys</h3>
                     <div class="setting-row">
                         <label for="settingsAssemblyAI">AssemblyAI</label>
-                        <input type="password" id="settingsAssemblyAI" placeholder="Configured" />
+                        <div class="key-input-row">
+                            <input type="password" id="settingsAssemblyAI" placeholder="Configured" />
+                            <a href="#" class="clear-key-link" data-key="assemblyai_api_key">Clear</a>
+                        </div>
                     </div>
                     <div class="setting-row">
                         <label for="settingsFibery">Fibery</label>
-                        <input type="password" id="settingsFibery" placeholder="Configured" />
+                        <div class="key-input-row">
+                            <input type="password" id="settingsFibery" placeholder="Configured" />
+                            <a href="#" class="clear-key-link" data-key="fibery_api_token">Clear</a>
+                        </div>
                     </div>
                     <div class="setting-row">
                         <label for="settingsGemini">Gemini</label>
-                        <input type="password" id="settingsGemini" placeholder="Configured" />
+                        <div class="key-input-row">
+                            <input type="password" id="settingsGemini" placeholder="Configured" />
+                            <a href="#" class="clear-key-link" data-key="gemini_api_key">Clear</a>
+                        </div>
                     </div>
                 </div>
                 <div class="setting-group">
@@ -336,7 +366,6 @@
                         <textarea id="settingsCompanyContext" rows="4" placeholder="Company-specific context for AI summarization..."></textarea>
                     </div>
                 </div>
-                <button class="action-btn" id="saveSettingsBtn">Save Settings</button>
             </div>
         </div>
     </div>

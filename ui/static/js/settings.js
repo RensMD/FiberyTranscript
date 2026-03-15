@@ -36,6 +36,22 @@ class SettingsManager {
 
         // Browse folder button
         this.browseBtn.addEventListener('click', () => this.browseFolder());
+
+        // Clear API key links
+        this._pendingClears = new Set();
+        document.querySelectorAll('.clear-key-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const keyName = link.dataset.key;
+                this._pendingClears.add(keyName);
+                // Find the sibling input and mark it
+                const input = link.parentElement.querySelector('input');
+                if (input) {
+                    input.value = '';
+                    input.placeholder = 'Will be cleared on save';
+                }
+            });
+        });
     }
 
     _toggleRecordingsDirRow() {
@@ -53,12 +69,17 @@ class SettingsManager {
 
     close() {
         this.overlay.classList.remove('open');
+        // Discard unsaved "Clear" actions so they don't leak into a later save
+        this._pendingClears.clear();
     }
 
     async loadCurrentSettings() {
+        // Reset stale clears from a previous open that was cancelled
+        this._pendingClears.clear();
         try {
             const settings = await window.pywebview.api.get_settings();
             document.getElementById('autoStart').checked = settings.auto_start_on_boot || false;
+            document.getElementById('minimizeToTray').checked = settings.minimize_to_tray_on_close || false;
             this.saveRecordingsCheckbox.checked = settings.save_recordings !== false;
             document.getElementById('themeSelect').value = settings.theme || 'dark';
             document.body.setAttribute('data-theme', settings.theme || 'dark');
@@ -67,6 +88,7 @@ class SettingsManager {
             this.recordingsDirInput.placeholder = settings.default_recordings_dir || 'Default location';
             this._toggleRecordingsDirRow();
             document.getElementById('defaultAudioStorage').value = settings.audio_storage || 'local';
+            document.getElementById('defaultPanelPage').value = settings.default_panel_page || '';
 
             // Gemini model settings
             document.getElementById('settingsGeminiModel').value = settings.gemini_model || '';
@@ -106,6 +128,7 @@ class SettingsManager {
         const geminiCleanup = document.getElementById('settingsGeminiCleanup').value.trim();
         const settings = {
             auto_start_on_boot: document.getElementById('autoStart').checked,
+            minimize_to_tray_on_close: document.getElementById('minimizeToTray').checked,
             save_recordings: this.saveRecordingsCheckbox.checked,
             recordings_dir: this.recordingsDirInput.value,
             theme: document.getElementById('themeSelect').value,
@@ -115,10 +138,14 @@ class SettingsManager {
             gemini_model_cleanup: geminiCleanup,
             company_context: document.getElementById('settingsCompanyContext').value,
             audio_storage: document.getElementById('defaultAudioStorage').value,
+            default_panel_page: document.getElementById('defaultPanelPage').value.trim(),
         };
 
         try {
-            await window.pywebview.api.save_settings(settings);
+            const saveResult = await window.pywebview.api.save_settings(settings);
+            if (saveResult && saveResult.warning) {
+                showToast(saveResult.warning, 'warning', 8000);
+            }
 
             // Update the cached default audio storage
             window._defaultAudioStorage = settings.audio_storage || 'local';
@@ -135,8 +162,16 @@ class SettingsManager {
             if (aai) keys.assemblyai_api_key = aai;
             if (gem) keys.gemini_api_key = gem;
             if (fib) keys.fibery_api_token = fib;
+            // Include __CLEAR__ sentinel for keys marked for deletion
+            for (const keyName of this._pendingClears) {
+                if (!keys[keyName]) keys[keyName] = '__CLEAR__';
+            }
+            this._pendingClears.clear();
             if (Object.keys(keys).length > 0) {
-                await window.pywebview.api.save_api_keys(keys);
+                const result = await window.pywebview.api.save_api_keys(keys);
+                if (result.warning) {
+                    showToast(result.warning, 'warning', 8000);
+                }
             }
 
             this.close();

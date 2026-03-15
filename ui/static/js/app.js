@@ -16,6 +16,15 @@ function showToast(message, type = 'info', duration = 5000) {
     }, duration);
 }
 
+// --- API Helper (for methods that return {success: bool}) ---
+async function callApi(method, ...args) {
+    const result = await window.pywebview.api[method](...args);
+    if (result && typeof result === 'object' && result.success === false) {
+        throw new Error(result.error || 'Unknown error');
+    }
+    return result;
+}
+
 // --- State ---
 let isRecording = false;
 let timerInterval = null;
@@ -61,14 +70,15 @@ const recordingMetaCollapsible = document.getElementById('recordingMetaCollapsib
 const uploadCollapsible = document.getElementById('uploadCollapsible');
 const sendPanelCollapsible = document.getElementById('sendPanelCollapsible');
 const newMeetingBtn = document.getElementById('newMeetingBtn');
+const retryBatchBtn = document.getElementById('retryBatchBtn');
 const continueRecordingBanner = document.getElementById('continueRecordingBanner');
 const continueRecordingBtn = document.getElementById('continueRecordingBtn');
 
-// Open entity link in external browser (pywebview doesn't support target=_blank)
+// Open entity link in the in-app Fibery panel
 document.getElementById('entityLink').addEventListener('click', (e) => {
     e.preventDefault();
     if (currentEntityUrl) {
-        window.pywebview.api.open_url(currentEntityUrl);
+        window.pywebview.api.navigate_entity_panel(currentEntityUrl);
     }
 });
 
@@ -90,6 +100,9 @@ const summarizeBtn = document.getElementById('summarizeBtn');
 const summaryStatusBadge = document.getElementById('summaryStatusBadge');
 const copyTranscriptBtn = document.getElementById('copyTranscriptBtn');
 const copySummaryBtn = document.getElementById('copySummaryBtn');
+const retryRow = document.getElementById('retryRow');
+const retryTranscriptBtn = document.getElementById('retryTranscriptBtn');
+const retryAudioUploadBtn = document.getElementById('retryAudioUploadBtn');
 
 // === Initialization ===
 window.addEventListener('pywebviewready', async () => {
@@ -368,10 +381,69 @@ function formatFileSize(bytes) {
 // === Fibery Audio Upload Callbacks ===
 window.onAudioUploadedToFibery = function() {
     showToast('Audio recording uploaded to Fibery', 'success');
+    retryAudioUploadBtn.style.display = 'none';
 };
 
 window.onAudioUploadError = function(message) {
-    showToast('Audio upload to Fibery failed: ' + message, 'warning', 8000);
+    const isEntityDeleted = message && (message.includes('not found') || message.includes('Not found'));
+    if (isEntityDeleted) {
+        showToast('Meeting was deleted in Fibery. Select a new meeting and retry the upload.', 'error', 10000);
+    } else {
+        showToast('Audio upload to Fibery failed: ' + message, 'warning', 8000);
+    }
+    retryAudioUploadBtn.style.display = '';
+    retryRow.classList.remove('hidden');
+    // Reset button text (may be stuck on "Uploading audio to Fibery...")
+    if (recordBtn.classList.contains('completed')) {
+        recordBtnText.textContent = 'Done';
+    }
+};
+
+// === Audio Health ===
+const audioHealthEl = document.getElementById('audioHealth');
+const healthMic = document.getElementById('healthMic');
+const healthSys = document.getElementById('healthSys');
+const healthClipping = document.getElementById('healthClipping');
+const healthSilence = document.getElementById('healthSilence');
+const healthSilenceText = document.getElementById('healthSilenceText');
+
+window.updateAudioHealth = function(h) {
+    // Mic status
+    const micDot = healthMic.querySelector('.health-dot');
+    if (h.mic_alive) {
+        micDot.className = 'health-dot green';
+        healthMic.lastChild.textContent = ' Mic active';
+    } else {
+        micDot.className = 'health-dot red';
+        healthMic.lastChild.textContent = ' Mic dead — check connection';
+    }
+    // Sys status
+    const sysDot = healthSys.querySelector('.health-dot');
+    if (h.sys_alive) {
+        sysDot.className = 'health-dot green';
+        healthSys.lastChild.textContent = ' System active';
+    } else {
+        sysDot.className = 'health-dot yellow';
+        healthSys.lastChild.textContent = ' No system audio';
+    }
+    // Clipping
+    if (h.mic_clipping || h.sys_clipping) {
+        healthClipping.classList.remove('hidden');
+    } else {
+        healthClipping.classList.add('hidden');
+    }
+    // Speech/silence
+    if (!h.speech_detected && h.silence_duration > 300) {
+        const mins = Math.floor(h.silence_duration / 60);
+        healthSilenceText.textContent = 'No speech for ' + mins + ' min';
+        healthSilence.classList.remove('hidden');
+    } else {
+        healthSilence.classList.add('hidden');
+    }
+};
+
+window.onHealthWarning = function(message) {
+    showToast(message, 'warning', 8000);
 };
 
 // === Level Monitoring ===
@@ -454,16 +526,21 @@ refreshDevicesBtn.addEventListener('click', async () => {
 // === Step 1: Fibery Meeting Selection ===
 
 // Panel URL change callback (called from Python via SourceChanged)
+let _pendingDisambiguationRevalidate = false;
 window.onPanelUrlChanged = function(url) {
     panelCurrentUrl = url;
     updateSelectButtonState();
+    if (_pendingDisambiguationRevalidate) {
+        _pendingDisambiguationRevalidate = false;
+        selectMeetingFromPanel();
+    }
 };
 
 function looksLikeFiberyEntity(url) {
     if (!url) return false;
     try {
         const u = new URL(url);
-        if (!u.hostname.endsWith('fibery.io')) return false;
+        if (u.hostname !== 'roboat.fibery.io') return false;
         const segments = u.pathname.split('/').filter(Boolean);
         // Need at least 2 segments: Space/entity-slug-NNN
         if (segments.length < 2) return false;
@@ -525,7 +602,14 @@ async function selectMeetingFromPanel() {
                 const proceed = confirm(
                     result.recording_lock.locked_by + ' is already recording this meeting.\n\nDo you want to continue recording?'
                 );
-                if (proceed) window.pywebview.api.acquire_recording_lock();
+                if (proceed) {
+                    await callApi('acquire_recording_lock');
+                } else {
+                    await callApi('deselect_meeting');
+                    resetFiberyValidation();
+                    showToast('Meeting deselected — another user is recording.', 'info');
+                    return;
+                }
             }
 
             if (result.pending_summary && sendActions.classList.contains('visible')) {
@@ -540,8 +624,10 @@ async function selectMeetingFromPanel() {
                 btn.innerHTML = `<span class="entity-name">${candidate.entity_name}</span><span class="entity-db">${candidate.database}</span>`;
                 btn.addEventListener('click', async () => {
                     fiberyDisambiguation.classList.add('hidden');
-                    await window.pywebview.api.navigate_entity_panel(candidate.url);
-                    setTimeout(() => selectMeetingFromPanel(), 500);
+                    await callApi('navigate_entity_panel', candidate.url);
+                    _pendingDisambiguationRevalidate = true;
+                    // Safety timeout: clear flag after 3s if panel never fires
+                    setTimeout(() => { _pendingDisambiguationRevalidate = false; }, 3000);
                 });
                 disambigOptions.appendChild(btn);
             });
@@ -612,7 +698,12 @@ async function createMeeting(meetingType) {
                     result.recording_lock.locked_by + ' is already recording this meeting.\n\nDo you want to continue recording?'
                 );
                 if (proceed) {
-                    window.pywebview.api.acquire_recording_lock();
+                    await callApi('acquire_recording_lock');
+                } else {
+                    await callApi('deselect_meeting');
+                    resetFiberyValidation();
+                    showToast('Meeting deselected — another user is recording.', 'info');
+                    return;
                 }
             }
         } else {
@@ -645,6 +736,11 @@ function resetFiberyValidation() {
 }
 
 changeLinkBtn.addEventListener('click', async () => {
+    // Block meeting changes during processing (allowed during recording)
+    if (recordBtn.classList.contains('processing')) {
+        showToast('Cannot change meeting while processing.', 'warning');
+        return;
+    }
     await window.pywebview.api.deselect_meeting();
     fiberyEntityInfo.classList.add('hidden');
     fiberySelectRow.classList.remove('hidden');
@@ -663,6 +759,10 @@ changeLinkBtn.addEventListener('click', async () => {
     updateAudioStorageState();
     // Re-collapse audio storage when meeting deselected
     audioStorageCollapsible.classList.add('collapsed');
+    // Show warning if deselected during recording
+    if (isRecording) {
+        fiberyMissingWarning.classList.remove('hidden');
+    }
 });
 
 function setFiberyValidateStatus(text, type) {
@@ -672,9 +772,12 @@ function setFiberyValidateStatus(text, type) {
 
 // === New Meeting / Reset Session ===
 newMeetingBtn.addEventListener('click', async () => {
-    if (isRecording) {
-        await stopRecording();
+    if (isRecording || recordBtn.classList.contains('processing')) {
+        if (!confirm('Processing is still running. Discarding will lose your transcript. Continue?')) {
+            return;
+        }
     }
+    if (isRecording) await stopRecording();
     resetSession();
 });
 
@@ -688,18 +791,17 @@ continueRecordingBtn.addEventListener('click', async () => {
         return;
     }
 
-    continueRecordingBanner.classList.add('hidden');
-
-    const result = await window.pywebview.api.continue_recording(micIdx, loopIdx);
-    if (result.success) {
+    try {
+        await callApi('continue_recording', micIdx, loopIdx);
+        continueRecordingBanner.classList.add('hidden');
         isRecording = true;
         setStatus('recording', 'Recording');
         recordingMetaCollapsible.classList.remove('collapsed');
         startTimer();
         newMeetingBtn.classList.add('hidden');
         showToast('Recording resumed. Transcripts will be merged.', 'info', 5000);
-    } else {
-        showToast('Failed to continue recording: ' + (result.error || 'Unknown error'), 'error');
+    } catch (err) {
+        showToast('Failed to continue recording: ' + err, 'error');
     }
 });
 
@@ -707,6 +809,9 @@ async function resetSession() {
     // Full reset: clear Python session data (transcript, summary, state)
     await window.pywebview.api.reset_session();
     resetFiberyValidation();
+
+    // Clear transcript DOM so stale data cannot leak into the next session
+    window.transcriptManager.clear();
 
     // Reset audio storage to settings default
     const defaultStorage = window._defaultAudioStorage || 'local';
@@ -716,6 +821,7 @@ async function resetSession() {
 
     // Reset recording meta and button
     recordingMetaCollapsible.classList.add('collapsed');
+    audioHealthEl.classList.add('hidden');
     setStatus('', '');
     recordTimer.textContent = '00:00:00';
 
@@ -738,11 +844,17 @@ async function resetSession() {
     transcribeBtn.textContent = 'Transcribe';
     browseAudioBtn.classList.remove('hidden');
 
-    // Reset summary state
+    // Reset summary and retry state
     generatedSummary = '';
     sendActions.classList.remove('visible');
     summaryStatusBadge.textContent = '';
     copySummaryBtn.disabled = true;
+    summarizeBtn.textContent = 'Summarize';
+    retryTranscriptBtn.style.display = 'none';
+    retryAudioUploadBtn.style.display = 'none';
+    retryRow.classList.add('hidden');
+    retryBatchBtn.style.display = 'none';
+    _lastFailedWavPath = '';
 
     // Clear warnings
     fiberyMissingWarning.classList.add('hidden');
@@ -800,6 +912,7 @@ async function startRecording() {
     // Update UI immediately so the button feels responsive
     isRecording = true;
     setStatus('recording', 'Recording');
+    audioHealthEl.classList.remove('hidden');
 
     // Show recording meta (timer + badge), hide upload section
     recordingMetaCollapsible.classList.remove('collapsed');
@@ -838,41 +951,56 @@ async function startRecording() {
                     return;
                 }
             }
-            await window.pywebview.api.acquire_recording_lock();
+            // Fail closed: abort recording if lock cannot be acquired
+            await callApi('acquire_recording_lock');
         } catch (err) {
-            console.warn('Recording lock check failed, proceeding anyway:', err);
+            isRecording = false;
+            setStatus('', '');
+            stopTimer();
+            recordingMetaCollapsible.classList.add('collapsed');
+            uploadCollapsible.classList.remove('collapsed');
+            audioStorageCollapsible.classList.add('collapsed');
+            sendPanelCollapsible.classList.add('collapsed');
+            showToast('Could not acquire recording lock: ' + err, 'error');
+            return;
         }
     }
 
     try {
-        await window.pywebview.api.stop_background_scanning();
-        await window.pywebview.api.start_recording(micIdx, loopIdx);
+        await callApi('stop_background_scanning');
+        await callApi('start_recording', micIdx, loopIdx);
     } catch (err) {
         // Revert UI on failure
         isRecording = false;
         setStatus('', '');
         stopTimer();
+        audioHealthEl.classList.add('hidden');
         console.error('Failed to start recording:', err);
         showToast('Failed to start recording: ' + err, 'error');
         fiberyMissingWarning.classList.add('hidden');
         // Revert progressive disclosure
         recordingMetaCollapsible.classList.add('collapsed');
         uploadCollapsible.classList.remove('collapsed');
+        sendPanelCollapsible.classList.add('collapsed');
         audioStorageCollapsible.classList.add('collapsed');
+        // Release lock if we acquired one
+        try { await callApi('release_recording_lock'); } catch (_) {}
     }
 }
 
 async function stopRecording() {
     try {
-        await window.pywebview.api.stop_recording();
-        setStatus('processing', 'Processing...');
-    } catch (err) {
-        console.error('Failed to stop recording:', err);
-        setStatus('', '');
-        showToast('Failed to stop recording: ' + err, 'error');
-    } finally {
+        await callApi('stop_recording');
+        // Only transition UI on success
         isRecording = false;
         stopTimer();
+        audioHealthEl.classList.add('hidden');
+        setStatus('processing', 'Processing...');
+    } catch (err) {
+        // Stop failed — backend is STILL RECORDING. Keep UI in recording state.
+        console.error('Failed to stop recording:', err);
+        showToast('Failed to stop recording: ' + err, 'error');
+        // Keep isRecording=true and timer running — backend is still recording
     }
 }
 
@@ -962,9 +1090,29 @@ window.onError = function(message) {
     newMeetingBtn.classList.remove('hidden');
 };
 
+let _lastFailedWavPath = '';
+window.onBatchFailed = function(info) {
+    setStatus('', '');
+    sendActions.classList.remove('visible');
+    uploadCollapsible.classList.remove('collapsed');
+    _lastFailedWavPath = (info && info.wav_path) || '';
+    if (_lastFailedWavPath) {
+        showToast('Transcription failed. Your recording was saved — click Retry to try again.', 'info', 10000);
+        retryBatchBtn.style.display = '';
+    }
+    newMeetingBtn.classList.remove('hidden');
+    // Resume idle monitoring (same as onProcessingComplete)
+    startMonitoring();
+    window.pywebview.api.start_background_scanning();
+};
+
 // === Silence Auto-Stop ===
 
 window.onSilenceCountdownStart = function(seconds) {
+    if (silenceCountdownInterval) {
+        clearInterval(silenceCountdownInterval);
+        silenceCountdownInterval = null;
+    }
     silenceCountdownRemaining = seconds;
     const overlay = document.getElementById('silenceOverlay');
     const countdownEl = document.getElementById('silenceCountdown');
@@ -1070,10 +1218,22 @@ function getSummaryStyle() {
 // === Transcript auto-send callbacks (triggered from Python after step 2) ===
 window.onTranscriptSentToFibery = function() {
     setStatus('completed', 'Transcript sent');
+    retryTranscriptBtn.style.display = 'none';
 };
 
 window.onTranscriptSendError = function(message) {
-    showToast('Could not send transcript to Fibery: ' + message, 'warning', 8000);
+    const isEntityDeleted = message && (message.includes('not found') || message.includes('Not found'));
+    if (isEntityDeleted) {
+        showToast('Meeting was deleted in Fibery. Select a new meeting and retry.', 'error', 10000);
+    } else {
+        showToast('Could not send transcript to Fibery: ' + message, 'warning', 8000);
+    }
+    retryTranscriptBtn.style.display = '';
+    retryRow.classList.remove('hidden');
+    // Reset button text if stuck
+    if (recordBtn.classList.contains('completed')) {
+        recordBtnText.textContent = 'Done';
+    }
 };
 
 // === Summarize (step 3) ===
@@ -1102,6 +1262,7 @@ window.onSummarizeComplete = function(result) {
     generatedSummary = (result && result.summary) ? result.summary : '';
     copySummaryBtn.disabled = !generatedSummary;
     summarizeBtn.disabled = false;
+    summarizeBtn.textContent = 'Summarize';
 
     if (result && result.sent_to_fibery) {
         setFiberyStatus('Updated in Fibery', 'success');
@@ -1116,6 +1277,7 @@ window.onSummarizeComplete = function(result) {
 window.onSummarizeError = function(message) {
     setFiberyStatus('Error: ' + message, 'error');
     summarizeBtn.disabled = false;
+    summarizeBtn.textContent = 'Retry Summary';
 };
 
 // === Pending summary sent after link was added ===
@@ -1132,6 +1294,44 @@ function setFiberyStatus(text, type) {
     summaryStatusBadge.className = 'status-badge' + (type ? ' ' + type : '');
 }
 
+// === Retry Handlers ===
+retryTranscriptBtn.addEventListener('click', async () => {
+    retryTranscriptBtn.disabled = true;
+    try {
+        await callApi('retry_send_transcript');
+        retryTranscriptBtn.style.display = 'none';
+    } catch (err) {
+        showToast('Retry failed: ' + err, 'error');
+    } finally {
+        retryTranscriptBtn.disabled = false;
+    }
+});
+
+retryAudioUploadBtn.addEventListener('click', async () => {
+    retryAudioUploadBtn.disabled = true;
+    try {
+        await callApi('retry_audio_upload');
+    } catch (err) {
+        showToast('Retry failed: ' + err, 'error');
+    } finally {
+        retryAudioUploadBtn.disabled = false;
+    }
+});
+
+retryBatchBtn.addEventListener('click', async () => {
+    if (!_lastFailedWavPath) return;
+    retryBatchBtn.disabled = true;
+    retryBatchBtn.style.display = 'none';
+    try {
+        await callApi('upload_and_transcribe', _lastFailedWavPath);
+        _lastFailedWavPath = '';
+    } catch (err) {
+        showToast('Retry failed: ' + err, 'error');
+        retryBatchBtn.disabled = false;
+        retryBatchBtn.style.display = '';
+    }
+});
+
 // === Transcript Actions ===
 copyTranscriptBtn.addEventListener('click', () => {
     const text = window.transcriptManager.getFormattedText() ||
@@ -1140,6 +1340,8 @@ copyTranscriptBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(text).then(() => {
             copyTranscriptBtn.textContent = 'Copied!';
             setTimeout(() => { copyTranscriptBtn.textContent = 'Copy Transcript'; }, 2000);
+            // Notify Python for close-confirmation logic
+            window.pywebview.api.mark_transcript_copied();
         });
     }
 });
@@ -1156,10 +1358,26 @@ copySummaryBtn.addEventListener('click', () => {
 // === Device Auto-Refresh ===
 setInterval(async () => {
     if (!isRecording && !recordBtn.classList.contains('processing') && !recordBtn.classList.contains('completed')) {
-        const currentMic = micSelect.value;
-        const currentLoop = loopbackSelect.value;
-        await loadDevices();
-        if (micSelect.querySelector(`option[value="${currentMic}"]`)) micSelect.value = currentMic;
-        if (loopbackSelect.querySelector(`option[value="${currentLoop}"]`)) loopbackSelect.value = currentLoop;
+        const prevMic = micSelect.value;
+        const prevLoop = loopbackSelect.value;
+        try {
+            const devices = await window.pywebview.api.get_audio_devices();
+            // Guard: if refresh returns error or empty, keep existing options
+            if (devices.error || (devices.microphones.length === 0 && devices.loopbacks.length === 0)) {
+                console.warn('Device refresh returned error or empty, keeping current list');
+                return;
+            }
+            await loadDevices();
+        } catch (err) {
+            console.warn('Device refresh failed, keeping current list:', err);
+            return;
+        }
+        // Restore previous selection if still available
+        if (prevMic && micSelect.querySelector(`option[value="${prevMic}"]`)) {
+            micSelect.value = prevMic;
+        }
+        if (prevLoop && loopbackSelect.querySelector(`option[value="${prevLoop}"]`)) {
+            loopbackSelect.value = prevLoop;
+        }
     }
 }, 10000);
