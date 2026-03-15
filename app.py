@@ -1031,6 +1031,10 @@ class FiberyTranscriptApp:
                 entity.database,
             )
             return
+        results = session.results if session else None
+        if results and not results.try_start_audio_upload():
+            logger.info("Audio upload already in-flight, skipping")
+            return
         try:
             self._notify_js(
                 'window.onProcessingProgress("Uploading audio to Fibery...")'
@@ -1039,6 +1043,8 @@ class FiberyTranscriptApp:
             file_meta = client.upload_file(file_path)
             file_id = file_meta["fibery/id"]
             client.attach_file_to_entity(entity, file_id)
+            if results:
+                results.finish_audio_upload()
             logger.info("Audio file uploaded to Fibery: %s", file_path.name)
             self._notify_js("window.onAudioUploadedToFibery()")
 
@@ -1053,6 +1059,8 @@ class FiberyTranscriptApp:
                         logger.warning("Could not delete WAV: %s", e)
 
         except Exception as e:
+            if results:
+                results.finish_audio_upload()
             logger.error("Failed to upload audio to Fibery: %s", e)
             self._notify_js(
                 f"window.onAudioUploadError({json.dumps(_friendly_error(e))})"
@@ -1387,6 +1395,9 @@ class FiberyTranscriptApp:
 
             # If entity already validated, send to Fibery immediately
             if self._validated_entity and self._fibery_client:
+                if session_results and not session_results.try_start_summary_send():
+                    logger.info("Summary send already in-flight, returning generated summary")
+                    return {"success": True, "sent_to_fibery": False, "summary": summary}
                 try:
                     self._fibery_client.update_summary_only(self._validated_entity, ai_summary=summary)
                     if session_results:
@@ -1413,6 +1424,9 @@ class FiberyTranscriptApp:
             return {"success": False, "error": "No summary available"}
         if not self._validated_entity or not self._fibery_client:
             return {"success": False, "error": "No Fibery entity validated"}
+        if session_results and not session_results.try_start_summary_send():
+            logger.info("Summary send already in-flight, skipping")
+            return {"success": False, "error": "Summary send already in progress"}
         try:
             self._fibery_client.update_summary_only(self._validated_entity, ai_summary=summary)
             if session_results:
@@ -1443,6 +1457,10 @@ class FiberyTranscriptApp:
                                 format_diarized_transcript(batch["utterances"]))
         else:
             return {"success": False, "error": "No transcript available"}
+
+        if session_results and not session_results.try_start_summary_send():
+            logger.info("Summary send already in-flight, skipping")
+            return {"success": False, "error": "Summary send already in progress"}
 
         try:
             if self._validated_entity:
@@ -1483,12 +1501,15 @@ class FiberyTranscriptApp:
 
             if self._session:
                 self._session.results.set_generated_summary(summary)
-                self._session.results.finish_summary_send(success=True)
             client.update_summary_only(entity, ai_summary=summary)
+            if self._session:
+                self._session.results.finish_summary_send(success=True)
             logger.info("AI Summary updated in Fibery")
             return {"success": True}
 
         except Exception as e:
+            if self._session:
+                self._session.results.finish_summary_send(success=False)
             logger.error("Fibery summarize workflow failed: %s", e)
             return {"success": False, "error": _friendly_error(e)}
 
