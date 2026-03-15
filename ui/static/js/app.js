@@ -472,7 +472,7 @@ function looksLikeFiberyEntity(url) {
     if (!url) return false;
     try {
         const u = new URL(url);
-        if (!u.hostname.endsWith('fibery.io')) return false;
+        if (u.hostname !== 'roboat.fibery.io') return false;
         const segments = u.pathname.split('/').filter(Boolean);
         // Need at least 2 segments: Space/entity-slug-NNN
         if (segments.length < 2) return false;
