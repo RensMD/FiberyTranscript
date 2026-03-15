@@ -1,6 +1,7 @@
 """Application settings with JSON persistence."""
 
 import json
+import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -47,7 +48,9 @@ class Settings:
         return cls()
 
     def save(self, path: Path) -> None:
-        """Persist settings to JSON file."""
+        """Persist settings to JSON file atomically (write-then-rename)."""
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = path.with_suffix('.tmp')
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, indent=2)
+        os.replace(str(tmp), str(path))
