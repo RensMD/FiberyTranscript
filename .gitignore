@@ -1,0 +1,53 @@
+# Python caches and artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build outputs
+dist/
+build/output/
+*.manifest
+*.tmp
+
+# Secrets and local private config
+.env
+.env.*
+!.env.example
+config/secrets.py
+config/private_context.py
+*.pem
+*.key
+*.p12
+*.pfx
+
+# App/runtime data
+data/
+logs/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Local AI/tooling metadata
+.claude/
+CLAUDE.local.md
+CLAUDE.md
+
+# Internal planning docs
+Masterplan
+Masterplan.*
+
+# IDE / OS noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

@@ -1,0 +1,28 @@
+# UI
+pywebview>=5.0
+pystray>=0.19
+
+# Audio
+sounddevice>=0.5
+soundfile>=0.12
+numpy>=1.24
+scipy>=1.11
+PyAudioWPatch>=0.2.12; sys_platform == "win32"
+
+# Transcription
+assemblyai>=0.30
+
+# AI / Summarization
+google-genai>=1.0
+
+# HTTP
+requests>=2.31
+
+# Secure key storage
+keyring>=25.0
+
+# Image (for tray icon)
+Pillow>=10.0
+
+# Build (dev only)
+pyinstaller>=6.0

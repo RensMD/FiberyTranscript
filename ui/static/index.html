@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FiberyTranscript</title>
+    <link rel="icon" type="image/x-icon" href="icon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="icon.png">
+    <link rel="icon" type="image/svg+xml" href="icon.svg">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body data-theme="dark">
+    <!-- Header Toolbar -->
+    <header class="header">
+        <div class="header-left">
+            <button class="new-meeting-link hidden" id="newMeetingBtn">+ New meeting</button>
+        </div>
+        <div class="header-right">
+            <button class="icon-btn" id="settingsBtn" title="Settings">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M11.482 20.924a1.666 1.666 0 0 1 -1.157 -1.241a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.312 .318 1.644 1.794 .995 2.697" />
+                    <path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" />
+                    <path d="M20 21l2 -2l-2 -2" />
+                    <path d="M17 17l-2 2l2 2" />
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main">
+
+        <!-- Step 1: Meeting -->
+        <section class="step-panel" id="fiberyLinkPanel">
+            <div class="step-header">
+                <span class="step-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+                    </svg>
+                </span>
+                <h2>Meeting</h2>
+            </div>
+            <div class="step-body">
+                <!-- Hint text (shown when no entity is browsed in the panel) -->
+                <span class="fibery-select-hint" id="fiberySelectHint">Browse to a meeting in the panel →</span>
+                <!-- Select meeting from panel -->
+                <div class="fibery-select-row" id="fiberySelectRow">
+                    <button class="action-btn" id="selectMeetingBtn" disabled>Select current meeting →</button>
+                </div>
+                <!-- Divider -->
+                <div class="section-divider" id="createMeetingDividerRow">
+                    <span class="section-divider-text">or create new</span>
+                </div>
+                <!-- Create new meeting fields -->
+                <div class="create-meeting-fields" id="createMeetingFields">
+                    <input type="text" id="createMeetingName" class="create-meeting-name" placeholder="Meeting name..." />
+                    <div class="create-meeting-buttons">
+                        <button class="create-meeting-btn" data-type="internal" disabled>Internal</button>
+                        <button class="create-meeting-btn" data-type="external" disabled>External</button>
+                        <button class="create-meeting-btn" data-type="interview" disabled>Interview</button>
+                    </div>
+                </div>
+                <!-- Disambiguation: shown when compound URL has two entity candidates -->
+                <div id="fiberyDisambiguation" class="fibery-disambiguation hidden">
+                    <p class="disambig-prompt">Which meeting do you want to use?</p>
+                    <div id="disambigOptions" class="disambig-options"></div>
+                </div>
+                <!-- Entity info shown after validation -->
+                <div id="fiberyEntityInfo" class="fibery-entity-info hidden">
+                    <a class="entity-link" id="entityLink" href="#" target="_blank" title="Open in Fibery">
+                        <div class="entity-details">
+                            <span class="entity-name" id="entityName"></span>
+                            <span class="entity-db" id="entityDb"></span>
+                        </div>
+                    </a>
+                    <button class="link-btn" id="changeLinkBtn">Deselect</button>
+                </div>
+                <div class="fibery-status" id="fiberyValidateStatus"></div>
+                <div class="fibery-status fibery-missing-warning hidden" id="fiberyMissingWarning">
+                    No meeting selected! Select a meeting for auto sending of transcript and summary.
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 2: Recording -->
+        <section class="step-panel" id="recordingPanel">
+            <div class="step-header">
+                <span class="step-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                    </svg>
+                </span>
+                <h2>Recording</h2>
+                <button class="icon-btn refresh-devices-btn" id="refreshDevicesBtn" title="Refresh audio devices">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                        <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="step-body">
+                <!-- Device row: Microphone -->
+                <div class="device-row">
+                    <div class="selector-group">
+                        <label for="micSelect">Microphone</label>
+                        <select id="micSelect">
+                            <option value="">-- Select Microphone --</option>
+                        </select>
+                    </div>
+                    <div class="level-bar-container">
+                        <canvas id="micLevelCanvas" width="400" height="6"></canvas>
+                    </div>
+                </div>
+
+                <!-- Device row: System Audio -->
+                <div class="device-row">
+                    <div class="selector-group">
+                        <label for="loopbackSelect">Speaker</label>
+                        <select id="loopbackSelect">
+                            <option value="">-- Select Speaker --</option>
+                        </select>
+                    </div>
+                    <div class="level-bar-container">
+                        <canvas id="sysLevelCanvas" width="400" height="6"></canvas>
+                    </div>
+                </div>
+
+                <!-- Recording Controls -->
+                <div class="recording-controls">
+                    <button class="record-btn" id="recordBtn">
+                        <span class="record-icon"></span>
+                        <span id="recordBtnText">Start Recording</span>
+                    </button>
+                    <!-- Timer hidden until recording starts -->
+                    <div class="collapsible collapsed" id="recordingMetaCollapsible">
+                        <div class="recording-meta">
+                            <span class="timer" id="recordTimer">00:00:00</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Continue Recording after sleep (hidden by default) -->
+                <div class="continue-recording-banner hidden" id="continueRecordingBanner">
+                    <span>Recording was interrupted by sleep.</span>
+                    <button class="continue-recording-btn" id="continueRecordingBtn">Continue Recording</button>
+                </div>
+
+                <!-- Audio Storage Toggle (hidden until meeting + recording) -->
+                <div class="collapsible collapsed" id="audioStorageCollapsible">
+                    <div class="audio-storage-group" id="audioStorageGroup">
+                        <span class="audio-storage-label">Save audio to</span>
+                        <div class="summary-style-options" role="radiogroup" aria-label="Audio storage">
+                            <div class="summary-style-option">
+                                <input type="radio" id="storageLocal" name="audioStorage" value="local" checked>
+                                <label for="storageLocal">Locally</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="radio" id="storageFibery" name="audioStorage" value="fibery">
+                                <label for="storageFibery">Fibery</label>
+                            </div>
+                        </div>
+                        <span class="audio-storage-hint" id="audioStorageHint"></span>
+                    </div>
+                </div>
+
+                <!-- Upload section (hidden during recording) -->
+                <div class="collapsible" id="uploadCollapsible">
+                    <div>
+                        <!-- Upload Divider -->
+                        <div class="section-divider" id="uploadDivider">
+                            <span class="section-divider-text">or upload an existing recording</span>
+                        </div>
+
+                        <!-- Upload Controls -->
+                        <div class="upload-controls" id="uploadControls">
+                            <button class="action-btn upload-btn" id="browseAudioBtn">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                                <span>Browse Audio File</span>
+                            </button>
+                            <div class="upload-file-info hidden" id="uploadFileInfo">
+                                <div class="upload-file-details">
+                                    <span class="upload-file-name" id="uploadFileName"></span>
+                                    <span class="upload-file-meta" id="uploadFileMeta"></span>
+                                </div>
+                                <button class="link-btn" id="clearUploadBtn">Clear</button>
+                            </div>
+                            <button class="action-btn primary-btn hidden" id="transcribeBtn">Transcribe</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Hidden transcript container (used by TranscriptManager for data storage) -->
+        <div id="transcriptContent" class="hidden"></div>
+
+        <!-- Step 3: AI Summary (hidden until recording/file) -->
+        <div class="collapsible collapsed" id="sendPanelCollapsible">
+        <section class="step-panel step-panel-last" id="sendPanel">
+            <div class="step-header">
+                <span class="step-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                    </svg>
+                </span>
+                <h2>AI Summary</h2>
+            </div>
+            <div class="step-body">
+                <!-- Additional instructions for summarization -->
+                <div class="instructions-group">
+                    <label for="additionalPrompt">Instructions for AI <span class="optional-label">optional</span></label>
+                    <textarea id="additionalPrompt" placeholder="Customize the prompt. (Default: You are a professional meeting summarizer. Keep the summary clear, professional, and focused on the topic at hand.)" rows="3"></textarea>
+                    <div class="summary-style-group">
+                        <span class="summary-style-label">Summary Style</span>
+                        <div class="summary-style-options" role="radiogroup" aria-label="Summary style">
+                            <div class="summary-style-option">
+                                <input type="radio" id="summaryStyleNormal" name="summaryStyle" value="normal" checked>
+                                <label for="summaryStyleNormal">Normal</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="radio" id="summaryStyleShort" name="summaryStyle" value="short">
+                                <label for="summaryStyleShort">Short</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="radio" id="summaryStyleMinimal" name="summaryStyle" value="minimal">
+                                <label for="summaryStyleMinimal">Minimal</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action buttons (shown after processing completes) -->
+                <div class="send-actions" id="sendActions">
+                    <div class="send-row">
+                        <button class="action-btn primary-btn" id="summarizeBtn">Summarize</button>
+                        <div class="copy-links">
+                            <button class="link-btn" id="copyTranscriptBtn" title="Copy raw transcript">Copy Transcript</button>
+                            <button class="link-btn" id="copySummaryBtn" title="Copy AI summary" disabled>Copy Summary</button>
+                        </div>
+                        <span class="status-badge" id="summaryStatusBadge"></span>
+                    </div>
+                </div>
+            </div>
+        </section>
+        </div>
+
+    </main>
+
+    <!-- Settings Overlay -->
+    <div class="settings-overlay" id="settingsOverlay">
+        <div class="settings-panel">
+            <div class="settings-header">
+                <h2>Settings</h2>
+                <button class="action-btn" id="saveSettingsBtn" style="margin-left:auto;">Save</button>
+                <button class="icon-btn" id="closeSettingsBtn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="settings-body">
+                <div class="setting-group">
+                    <h3>Preferences</h3>
+                    <div class="setting-row checkbox-row">
+                        <label for="autoStart">Start on boot</label>
+                        <input type="checkbox" id="autoStart" />
+                    </div>
+                    <div class="setting-row checkbox-row">
+                        <label for="saveRecordings">Save audio recordings</label>
+                        <input type="checkbox" id="saveRecordings" checked />
+                    </div>
+                    <div class="setting-row" id="recordingsDirRow">
+                        <label for="recordingsDir">Recordings folder</label>
+                        <div class="folder-picker">
+                            <input type="text" id="recordingsDir" placeholder="Default location" readonly />
+                            <button class="small-btn" id="browseRecordingsBtn">Browse</button>
+                        </div>
+                    </div>
+                    <div class="setting-row">
+                        <label for="defaultAudioStorage">Default audio storage</label>
+                        <select id="defaultAudioStorage">
+                            <option value="local">Locally</option>
+                            <option value="fibery">Fibery</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label for="themeSelect">Theme</label>
+                        <select id="themeSelect">
+                            <option value="dark">Dark</option>
+                            <option value="light">Light</option>
+                        </select>
+                    </div>
+                    <div class="setting-row">
+                        <label for="displayName">Display Name</label>
+                        <input type="text" id="displayName" placeholder="Your name (for recording lock)" />
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <h3>API Keys</h3>
+                    <div class="setting-row">
+                        <label for="settingsAssemblyAI">AssemblyAI</label>
+                        <input type="password" id="settingsAssemblyAI" placeholder="Configured" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="settingsFibery">Fibery</label>
+                        <input type="password" id="settingsFibery" placeholder="Configured" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="settingsGemini">Gemini</label>
+                        <input type="password" id="settingsGemini" placeholder="Configured" />
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <h3>Gemini AI Models</h3>
+                    <div class="setting-row">
+                        <label for="settingsGeminiModel">Main Model</label>
+                        <input type="text" id="settingsGeminiModel" placeholder="e.g. gemini-3.1-pro-preview" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="settingsGeminiFallback">Fallback Model</label>
+                        <input type="text" id="settingsGeminiFallback" placeholder="e.g. gemini-3-flash-preview" />
+                    </div>
+                    <div class="setting-row">
+                        <label for="settingsGeminiCleanup">Cleanup Model</label>
+                        <input type="text" id="settingsGeminiCleanup" placeholder="e.g. gemini-2.0-flash" />
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <h3>Summarization</h3>
+                    <div class="setting-row">
+                        <label for="settingsCompanyContext">Company Context</label>
+                        <textarea id="settingsCompanyContext" rows="4" placeholder="Company-specific context for AI summarization..."></textarea>
+                    </div>
+                </div>
+                <button class="action-btn" id="saveSettingsBtn">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- API Key Setup Overlay (shown on first run if keys not configured) -->
+    <div class="setup-overlay" id="setupOverlay">
+        <div class="setup-panel">
+            <h2>Welcome to Fibery Transcript</h2>
+            <p class="setup-desc">Enter your API keys to get started. These are stored securely in your system's credential store.</p>
+            <div class="setup-fields">
+                <div class="setting-row">
+                    <label for="setupAssemblyAI">AssemblyAI API Key</label>
+                    <input type="password" id="setupAssemblyAI" placeholder="Enter AssemblyAI key..." />
+                </div>
+                <div class="setting-row">
+                    <label for="setupGemini">Google Gemini API Key</label>
+                    <input type="password" id="setupGemini" placeholder="Enter Gemini key..." />
+                </div>
+                <div class="setting-row">
+                    <label for="setupFibery">Fibery API Token</label>
+                    <input type="password" id="setupFibery" placeholder="Enter Fibery token..." />
+                </div>
+            </div>
+            <div class="setup-status" id="setupStatus"></div>
+            <button class="action-btn primary-btn" id="setupSaveBtn">Save & Continue</button>
+        </div>
+    </div>
+
+    <!-- Silence Auto-Stop Countdown -->
+    <div class="silence-overlay" id="silenceOverlay">
+        <div class="silence-panel">
+            <h3 class="silence-title">Meeting seems to have ended</h3>
+            <p class="silence-desc">No audio detected for 3 minutes. Recording will auto-stop in:</p>
+            <div class="silence-countdown" id="silenceCountdown">60</div>
+            <div class="silence-actions">
+                <button class="action-btn" id="silenceDismissBtn">Keep Recording</button>
+                <button class="action-btn silence-stop-btn" id="silenceStopNowBtn">Stop Now</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="js/audio-viz.js"></script>
+    <script src="js/transcript.js"></script>
+    <script src="js/settings.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

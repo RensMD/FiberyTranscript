@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Fibery Transcript
+Comment=Audio transcription with Fibery integration
+Exec=FiberyTranscript
+Icon=icon
+Categories=AudioVideo;Audio;Utility;
+Terminal=false
+StartupNotify=true

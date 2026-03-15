@@ -1,0 +1,29 @@
+[project]
+name = "fibery-transcript"
+version = "1.0.1"
+description = "Cross-platform audio transcription tool with Fibery integration"
+requires-python = ">=3.11"
+dependencies = [
+    "pywebview>=5.0",
+    "pystray>=0.19",
+    "sounddevice>=0.5",
+    "soundfile>=0.12",
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "assemblyai>=0.30",
+    "google-genai>=1.0",
+    "requests>=2.31",
+    "Pillow>=10.0",
+    "keyring>=25.0",
+]
+
+[project.optional-dependencies]
+windows = ["PyAudioWPatch>=0.2.12"]
+build = ["pyinstaller>=6.0"]
+
+[project.scripts]
+fibery-transcript = "main:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
