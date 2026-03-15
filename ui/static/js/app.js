@@ -693,9 +693,12 @@ function setFiberyValidateStatus(text, type) {
 
 // === New Meeting / Reset Session ===
 newMeetingBtn.addEventListener('click', async () => {
-    if (isRecording) {
-        await stopRecording();
+    if (isRecording || recordBtn.classList.contains('processing')) {
+        if (!confirm('Processing is still running. Discarding will lose your transcript. Continue?')) {
+            return;
+        }
     }
+    if (isRecording) await stopRecording();
     resetSession();
 });
 
