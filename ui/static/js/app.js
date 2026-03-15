@@ -16,6 +16,15 @@ function showToast(message, type = 'info', duration = 5000) {
     }, duration);
 }
 
+// --- API Helper (for methods that return {success: bool}) ---
+async function callApi(method, ...args) {
+    const result = await window.pywebview.api[method](...args);
+    if (result && typeof result === 'object' && result.success === false) {
+        throw new Error(result.error || 'Unknown error');
+    }
+    return result;
+}
+
 // --- State ---
 let isRecording = false;
 let timerInterval = null;
@@ -688,10 +697,9 @@ continueRecordingBtn.addEventListener('click', async () => {
         return;
     }
 
-    continueRecordingBanner.classList.add('hidden');
-
     const result = await window.pywebview.api.continue_recording(micIdx, loopIdx);
     if (result.success) {
+        continueRecordingBanner.classList.add('hidden');
         isRecording = true;
         setStatus('recording', 'Recording');
         recordingMetaCollapsible.classList.remove('collapsed');
@@ -845,8 +853,8 @@ async function startRecording() {
     }
 
     try {
-        await window.pywebview.api.stop_background_scanning();
-        await window.pywebview.api.start_recording(micIdx, loopIdx);
+        await callApi('stop_background_scanning');
+        await callApi('start_recording', micIdx, loopIdx);
     } catch (err) {
         // Revert UI on failure
         isRecording = false;
@@ -859,20 +867,23 @@ async function startRecording() {
         recordingMetaCollapsible.classList.add('collapsed');
         uploadCollapsible.classList.remove('collapsed');
         audioStorageCollapsible.classList.add('collapsed');
+        // Release lock if we acquired one
+        try { await callApi('release_recording_lock'); } catch (_) {}
     }
 }
 
 async function stopRecording() {
     try {
-        await window.pywebview.api.stop_recording();
-        setStatus('processing', 'Processing...');
-    } catch (err) {
-        console.error('Failed to stop recording:', err);
-        setStatus('', '');
-        showToast('Failed to stop recording: ' + err, 'error');
-    } finally {
+        await callApi('stop_recording');
+        // Only transition UI on success
         isRecording = false;
         stopTimer();
+        setStatus('processing', 'Processing...');
+    } catch (err) {
+        // Stop failed — backend is STILL RECORDING. Keep UI in recording state.
+        console.error('Failed to stop recording:', err);
+        showToast('Failed to stop recording: ' + err, 'error');
+        // Keep isRecording=true and timer running — backend is still recording
     }
 }
 
