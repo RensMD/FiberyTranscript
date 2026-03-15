@@ -534,7 +534,14 @@ async function selectMeetingFromPanel() {
                 const proceed = confirm(
                     result.recording_lock.locked_by + ' is already recording this meeting.\n\nDo you want to continue recording?'
                 );
-                if (proceed) window.pywebview.api.acquire_recording_lock();
+                if (proceed) {
+                    await callApi('acquire_recording_lock');
+                } else {
+                    await callApi('deselect_meeting');
+                    resetFiberyValidation();
+                    showToast('Meeting deselected — another user is recording.', 'info');
+                    return;
+                }
             }
 
             if (result.pending_summary && sendActions.classList.contains('visible')) {
@@ -621,7 +628,12 @@ async function createMeeting(meetingType) {
                     result.recording_lock.locked_by + ' is already recording this meeting.\n\nDo you want to continue recording?'
                 );
                 if (proceed) {
-                    window.pywebview.api.acquire_recording_lock();
+                    await callApi('acquire_recording_lock');
+                } else {
+                    await callApi('deselect_meeting');
+                    resetFiberyValidation();
+                    showToast('Meeting deselected — another user is recording.', 'info');
+                    return;
                 }
             }
         } else {
