@@ -84,6 +84,7 @@ class FiberyTranscriptApp:
         self._selected_mic_index: Optional[int] = None
         self._selected_sys_index: Optional[int] = None
         self._is_shutting_down = False
+        self._batch_thread: Optional[threading.Thread] = None
 
         # Lock to prevent concurrent stop_recording calls (sleep + silence race)
         self._stop_lock = threading.Lock()
@@ -593,18 +594,20 @@ class FiberyTranscriptApp:
         # Trigger batch processing in background
         session = self._session  # capture for background thread
         if wav_path and session:
-            threading.Thread(
+            self._batch_thread = threading.Thread(
                 target=self._run_batch_processing,
                 args=(session,),
                 daemon=True,
-            ).start()
+            )
+            self._batch_thread.start()
         elif wav_path:
             # Fallback: no session (shouldn't happen), use paths directly
-            threading.Thread(
+            self._batch_thread = threading.Thread(
                 target=self._run_batch_processing,
                 args=(RecordingSession(SessionContext(wav_path=str(wav_path), compressed_path=compressed_path or "")),),
                 daemon=True,
-            ).start()
+            )
+            self._batch_thread.start()
         else:
             # No audio recorded, just mark as completed
             self.state = self.STATE_COMPLETED
@@ -714,11 +717,12 @@ class FiberyTranscriptApp:
         logger.info("Upload transcription started: %s", path.name)
 
         session = self._session
-        threading.Thread(
+        self._batch_thread = threading.Thread(
             target=self._run_batch_processing,
             args=(session,),
             daemon=True,
-        ).start()
+        )
+        self._batch_thread.start()
 
     def _find_device(self, index: int, is_loopback: bool) -> Optional[AudioDevice]:
         """Find a device by its index."""
@@ -1546,12 +1550,17 @@ class FiberyTranscriptApp:
             self.state = self.STATE_IDLE
 
     def begin_shutdown(self) -> None:
-        """Mark app as shutting down and stop all background activity.
-        """
+        """Mark app as shutting down and stop all background activity."""
         if self._is_shutting_down:
             return
         self._emergency_stop_recording()
         self.release_recording_lock()
+        # Wait briefly for batch processing to finish (avoid losing transcript)
+        if self._batch_thread and self._batch_thread.is_alive():
+            logger.info("Waiting for batch processing to complete...")
+            self._batch_thread.join(timeout=5.0)
+            if self._batch_thread.is_alive():
+                logger.warning("Batch processing still running, forcing shutdown")
         self._is_shutting_down = True
         self._scan_stop_event.set()
         if self.audio_capture.is_capturing():
