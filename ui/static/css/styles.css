@@ -1035,6 +1035,20 @@ textarea::placeholder {
     accent-color: var(--accent);
 }
 
+.key-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.key-input-row input { flex: 1; min-width: 0; }
+.clear-key-link {
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.clear-key-link:hover { color: var(--accent); }
+
 .folder-picker {
     display: flex;
     gap: 8px;

@@ -446,10 +446,15 @@ class ApiBridge:
         }
 
     def save_api_keys(self, keys: dict) -> dict:
-        """Save API keys to the system keyring."""
-        from config.keystore import save_all_keys
+        """Save API keys to the system keyring. Use "__CLEAR__" to delete a key."""
+        from config.keystore import save_all_keys, delete_key
         try:
-            success = save_all_keys(keys)
+            # Handle __CLEAR__ sentinel for key deletion
+            to_delete = [k for k, v in keys.items() if v == "__CLEAR__"]
+            for key_name in to_delete:
+                delete_key(key_name)
+                del keys[key_name]
+            success = save_all_keys(keys) if keys else True
             if not success:
                 return {"success": True, "warning": "API keys could not be saved to your system keychain. They may not persist after restart."}
             return {"success": True}

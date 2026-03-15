@@ -36,6 +36,22 @@ class SettingsManager {
 
         // Browse folder button
         this.browseBtn.addEventListener('click', () => this.browseFolder());
+
+        // Clear API key links
+        this._pendingClears = new Set();
+        document.querySelectorAll('.clear-key-link').forEach(link => {
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                const keyName = link.dataset.key;
+                this._pendingClears.add(keyName);
+                // Find the sibling input and mark it
+                const input = link.parentElement.querySelector('input');
+                if (input) {
+                    input.value = '';
+                    input.placeholder = 'Will be cleared on save';
+                }
+            });
+        });
     }
 
     _toggleRecordingsDirRow() {
@@ -137,6 +153,11 @@ class SettingsManager {
             if (aai) keys.assemblyai_api_key = aai;
             if (gem) keys.gemini_api_key = gem;
             if (fib) keys.fibery_api_token = fib;
+            // Include __CLEAR__ sentinel for keys marked for deletion
+            for (const keyName of this._pendingClears) {
+                if (!keys[keyName]) keys[keyName] = '__CLEAR__';
+            }
+            this._pendingClears.clear();
             if (Object.keys(keys).length > 0) {
                 const result = await window.pywebview.api.save_api_keys(keys);
                 if (result.warning) {
