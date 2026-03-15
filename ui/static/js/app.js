@@ -1001,6 +1001,10 @@ window.onBatchFailed = function(info) {
 // === Silence Auto-Stop ===
 
 window.onSilenceCountdownStart = function(seconds) {
+    if (silenceCountdownInterval) {
+        clearInterval(silenceCountdownInterval);
+        silenceCountdownInterval = null;
+    }
     silenceCountdownRemaining = seconds;
     const overlay = document.getElementById('silenceOverlay');
     const countdownEl = document.getElementById('silenceCountdown');
