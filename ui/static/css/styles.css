@@ -26,6 +26,7 @@
     --level-green: #66bb6a;
     --level-yellow: #ffa726;
     --level-red: #ef5350;
+    --bg-hover: rgba(255, 255, 255, 0.05);
 }
 
 [data-theme="light"] {
@@ -48,6 +49,7 @@
     --level-green: #4caf50;
     --level-yellow: #ff9800;
     --level-red: #f44336;
+    --bg-hover: rgba(0, 0, 0, 0.04);
 }
 
 /* === Reset & Base === */
