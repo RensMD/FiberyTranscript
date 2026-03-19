@@ -129,7 +129,8 @@ class TestResetSession:
         app._session = RecordingSession(ctx)
         app._validated_entity = "something"
         app._entity_context = "context"
-        app._previous_batch_result = {"data": True}
+        app._recording_segments = [Path("seg1.wav")]
+        app._sleeping = True
 
         app.reset_session()
 
@@ -137,4 +138,5 @@ class TestResetSession:
         assert app._session is None
         assert app._validated_entity is None
         assert app._entity_context is None
-        assert app._previous_batch_result is None
+        assert app._recording_segments == []
+        assert app._sleeping is False

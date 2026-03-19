@@ -74,9 +74,11 @@ class FiberyTranscriptApp:
         # Entity context for word boost / summary enrichment
         self._entity_context = None
 
-        # Level update throttling
+        # Level update throttling — limit evaluate_js calls to ~5/sec
         self._last_mic_level: float = 0.0
         self._last_sys_level: float = 0.0
+        self._last_level_push: float = 0.0
+        self._LEVEL_PUSH_INTERVAL: float = 0.2  # seconds between JS level pushes
 
         # Device scanning
         self._scan_thread: Optional[threading.Thread] = None
@@ -103,7 +105,14 @@ class FiberyTranscriptApp:
 
         # Power monitor (set by main.py)
         self._power_monitor = None
-        self._stopped_by_sleep: bool = False
+
+        # Multi-segment recording across sleep/wake cycles
+        self._recording_segments: list[Path] = []    # completed WAV segment paths
+        self._segment_ogg_paths: list[Path] = []     # parallel OGG paths to clean up
+        self._sleeping: bool = False                  # True between sleep and wake
+        self._accumulated_recording_secs: float = 0.0  # total recording time pre-sleep
+        self._segment_start_time: float = 0.0        # monotonic time when segment started
+        self._sleep_wall_time: float = 0.0           # wall-clock time when sleep began
 
         # Lock refresh tracking (refresh every 10 min during long recordings)
         self._last_lock_refresh: float = 0.0
@@ -111,10 +120,6 @@ class FiberyTranscriptApp:
         # Session identity token — incremented on reset so background threads
         # can detect that their session is stale and stop firing UI callbacks.
         self._session_token: int = 0
-
-        # Stashed results from previous recording segment (for continue-after-sleep)
-        self._previous_batch_result: Optional[dict] = None
-        self._previous_cleaned_transcript: Optional[str] = None
 
     @property
     def needs_close_confirmation(self) -> bool:
@@ -154,8 +159,10 @@ class FiberyTranscriptApp:
         self._validated_entity = None
         self._entity_context = None
         self._session = None
-        self._previous_batch_result = None
-        self._previous_cleaned_transcript = None
+        self._recording_segments = []
+        self._segment_ogg_paths = []
+        self._sleeping = False
+        self._accumulated_recording_secs = 0.0
         self.state = self.STATE_IDLE
         logger.info("Session reset (token=%d)", self._session_token)
 
@@ -454,7 +461,13 @@ class FiberyTranscriptApp:
 
         self._recording_silence_start = None
         self._auto_stop_countdown_active = False
-        self._stopped_by_sleep = False
+
+        # Reset multi-segment tracking for a fresh recording
+        self._recording_segments = []
+        self._segment_ogg_paths = []
+        self._sleeping = False
+        self._accumulated_recording_secs = 0.0
+        self._segment_start_time = time.monotonic()
 
         # Find devices by index
         mic_device = self._find_device(mic_index, is_loopback=False) if mic_index is not None else None
@@ -584,21 +597,30 @@ class FiberyTranscriptApp:
         # Release recording lock
         self.release_recording_lock()
 
-        # Stop audio capture
-        self.audio_capture.stop_capture()
+        if self._sleeping:
+            # User stopped while asleep (via tray/UI) — no active capture to stop
+            self._sleeping = False
+        else:
+            # Stop audio capture
+            self.audio_capture.stop_capture()
 
-        # Flush mixer
-        if self._mixer:
-            self._mixer.flush()
-            self._mixer = None
+            # Flush mixer
+            if self._mixer:
+                self._mixer.flush()
+                self._mixer = None
 
-        # Stop WAV recorder (also finalizes parallel OGG compression)
-        wav_path = None
-        compressed_path = None
-        if self._recorder:
-            wav_path = self._recorder.stop()
-            cp = self._recorder.compressed_path
-            compressed_path = str(cp) if cp else None
+            # Stop WAV recorder and collect this segment
+            if self._recorder:
+                seg_path = self._recorder.stop()
+                if seg_path:
+                    self._recording_segments.append(seg_path)
+                ogg = self._recorder.compressed_path
+                if ogg:
+                    self._segment_ogg_paths.append(ogg)
+                self._recorder = None
+
+        # Merge segments if we have prior sleep-saved segments
+        wav_path, compressed_path = self._finalize_segments()
 
         # Bake the file paths into the frozen session context.
         # Use current validated entity (user may have switched meetings during recording).
@@ -634,6 +656,88 @@ class FiberyTranscriptApp:
             self._batch_thread.start()
         else:
             # No audio recorded, just mark as completed
+            self.state = self.STATE_COMPLETED
+            self._notify_js("window.onProcessingComplete()")
+
+    def _finalize_segments(self) -> tuple:
+        """Merge recorded segments and clean up. Returns (wav_path, compressed_path)."""
+        segments = self._recording_segments
+        ogg_paths = self._segment_ogg_paths
+        self._recording_segments = []
+        self._segment_ogg_paths = []
+
+        if not segments:
+            return None, None
+
+        if len(segments) == 1:
+            # Single segment — use directly, keep its OGG if available
+            wav_path = segments[0]
+            compressed_path = str(ogg_paths[0]) if ogg_paths else None
+            return str(wav_path), compressed_path
+
+        # Multiple segments — merge with silence gaps
+        from audio.wav_merge import merge_wav_files
+        merged_path = merge_wav_files(segments)
+
+        # Clean up individual segment WAV files
+        for seg in segments:
+            try:
+                seg.unlink()
+                logger.debug("Cleaned up segment: %s", seg.name)
+            except OSError as e:
+                logger.warning("Could not delete segment %s: %s", seg.name, e)
+
+        # Clean up segment OGG files (we'll re-compress the merged WAV)
+        for ogg in ogg_paths:
+            try:
+                ogg.unlink()
+                logger.debug("Cleaned up segment OGG: %s", ogg.name)
+            except OSError as e:
+                logger.warning("Could not delete segment OGG %s: %s", ogg.name, e)
+
+        # Return merged path with no compressed_path (force re-compression)
+        return str(merged_path), None
+
+    def _finalize_and_process(self) -> None:
+        """Merge segments and trigger batch processing.
+
+        Called by wake handler on timeout or device failure.
+        """
+        try:
+            wav_path, compressed_path = self._finalize_segments()
+        except Exception as e:
+            logger.error("Failed to merge segments: %s", e)
+            wav_path, compressed_path = None, None
+
+        if not wav_path:
+            self.state = self.STATE_COMPLETED
+            self._notify_js("window.onProcessingComplete()")
+            return
+
+        # Update session with merged file
+        if self._session:
+            self._session = RecordingSession(SessionContext(
+                entity=self._validated_entity or self._session.context.entity,
+                fibery_client=self._fibery_client or self._session.context.fibery_client,
+                entity_context=self._entity_context or self._session.context.entity_context,
+                wav_path=wav_path,
+                compressed_path=compressed_path or "",
+                is_uploaded_file=False,
+            ))
+
+        self.state = self.STATE_PROCESSING
+        logger.info("Finalized segments, starting batch processing")
+        self._notify_js("window.onRecordingEndedForProcessing()")
+
+        session = self._session
+        if session:
+            self._batch_thread = threading.Thread(
+                target=self._run_batch_processing,
+                args=(session,),
+                daemon=True,
+            )
+            self._batch_thread.start()
+        else:
             self.state = self.STATE_COMPLETED
             self._notify_js("window.onProcessingComplete()")
 
@@ -789,9 +893,14 @@ class FiberyTranscriptApp:
         if sys_level >= 0:
             self._last_sys_level = sys_level
 
-        self._notify_js(
-            f"window.updateAudioLevels({self._last_mic_level:.4f}, {self._last_sys_level:.4f})"
-        )
+        # Throttle JS pushes to ~5/sec to avoid flooding WebView2 with evaluate_js calls.
+        # Unthrottled, this fires ~20/sec (both audio sources × 10 callbacks/sec each).
+        now = time.monotonic()
+        if now - self._last_level_push >= self._LEVEL_PUSH_INTERVAL:
+            self._last_level_push = now
+            self._notify_js(
+                f"window.updateAudioLevels({self._last_mic_level:.4f}, {self._last_sys_level:.4f})"
+            )
 
         # Audio health monitoring during recording
         if self.state == self.STATE_RECORDING:
@@ -825,6 +934,37 @@ class FiberyTranscriptApp:
         if now - self._last_silence_check < 1.0:
             return
         self._last_silence_check = now
+
+        # Log memory usage every 60 seconds during recording for diagnostics
+        if int(now - self._segment_start_time) % 60 < 1:
+            try:
+                import os
+                if hasattr(os, "getpid"):
+                    import ctypes
+                    kernel32 = ctypes.windll.kernel32
+                    # PROCESS_MEMORY_COUNTERS via GetProcessMemoryInfo
+                    class PMC(ctypes.Structure):
+                        _fields_ = [("cb", ctypes.c_ulong),
+                                    ("PageFaultCount", ctypes.c_ulong),
+                                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                                    ("WorkingSetSize", ctypes.c_size_t),
+                                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                                    ("PagefileUsage", ctypes.c_size_t),
+                                    ("PeakPagefileUsage", ctypes.c_size_t)]
+                    pmc = PMC()
+                    pmc.cb = ctypes.sizeof(PMC)
+                    handle = kernel32.GetCurrentProcess()
+                    if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb):
+                        logger.info(
+                            "Memory: RSS=%.1f MB, Peak=%.1f MB (recording for %.0f s)",
+                            pmc.WorkingSetSize / 1e6, pmc.PeakWorkingSetSize / 1e6,
+                            self._accumulated_recording_secs + (now - self._segment_start_time),
+                        )
+            except Exception:
+                pass  # non-Windows or API unavailable
 
         # Refresh lock every 10 minutes using the frozen session context.
         # Runs on a separate thread to avoid blocking the audio callback.
@@ -884,60 +1024,142 @@ class FiberyTranscriptApp:
     # --- System Sleep / Wake ---
 
     def on_system_sleep(self) -> None:
-        """Called by power monitor when the system is going to sleep."""
+        """Called by power monitor when the system is going to sleep.
+
+        Instead of stopping the recording, we save the current segment and
+        pause. On wake, we auto-resume into a new segment. All segments are
+        merged into a single WAV when the user finally stops.
+        """
         logger.info("System sleep detected, state=%s", self.state)
-        if self.state == self.STATE_RECORDING:
-            self._stopped_by_sleep = True
-            # Cancel any active silence countdown
-            if self._auto_stop_countdown_active:
-                self._auto_stop_countdown_active = False
-                self._notify_js("window.onSilenceCountdownCancel()")
-            self.stop_recording()
-            self._notify_js("window.onSleepStop()")
+        if self.state != self.STATE_RECORDING or self._sleeping:
+            return
+
+        # Cancel any active silence countdown
+        if self._auto_stop_countdown_active:
+            self._auto_stop_countdown_active = False
+            self._notify_js("window.onSilenceCountdownCancel()")
+
+        # Stop audio capture (devices will be invalid after sleep)
+        try:
+            self.audio_capture.stop_capture()
+        except Exception as e:
+            logger.warning("Error stopping capture on sleep: %s", e)
+
+        # Flush mixer and tear down
+        if self._mixer:
+            self._mixer.flush()
+            self._mixer = None
+
+        # Stop recorder and save segment
+        if self._recorder:
+            seg_path = self._recorder.stop()
+            if seg_path:
+                self._recording_segments.append(seg_path)
+            ogg = self._recorder.compressed_path
+            if ogg:
+                self._segment_ogg_paths.append(ogg)
+            self._recorder = None
+
+        # Accumulate recording time for this segment
+        self._accumulated_recording_secs += time.monotonic() - self._segment_start_time
+
+        self._sleeping = True
+        self._sleep_wall_time = time.time()
+
+        # Tell JS to freeze the timer (no state change, no UI indication)
+        self._notify_js(f"window.onSleepPauseTimer({self._accumulated_recording_secs})")
 
     def on_system_wake(self) -> None:
-        """Called by power monitor when the system wakes from sleep."""
-        logger.info("System wake detected, stopped_by_sleep=%s, state=%s", self._stopped_by_sleep, self.state)
-        if self._stopped_by_sleep:
-            self._stopped_by_sleep = False
-            self._notify_js("window.onSleepWakeNotification()")
+        """Called by power monitor when the system wakes from sleep.
 
-        # Warn if processing was likely interrupted by sleep
-        if self.state == self.STATE_PROCESSING:
-            self._notify_js("window.onSleepDuringProcessing()")
+        If we were sleeping (paused recording), auto-resume into a new segment.
+        If the sleep exceeded 2 hours, finalize instead.
+        """
+        logger.info("System wake detected, sleeping=%s, state=%s", self._sleeping, self.state)
 
         # Re-apply window icon (Win32 icon handles get invalidated after sleep)
-        import threading
         from ui.window import reapply_win32_icon
         threading.Thread(target=reapply_win32_icon, daemon=True).start()
 
-    def continue_recording(
-        self,
-        mic_index: Optional[int],
-        loopback_index: Optional[int],
-    ) -> None:
-        """Continue recording after a sleep interruption.
+        if not self._sleeping:
+            # Warn if processing was likely interrupted by sleep
+            if self.state == self.STATE_PROCESSING:
+                self._notify_js("window.onSleepDuringProcessing()")
+            return
 
-        Stashes the current batch result and cleaned transcript so the next
-        recording's processing can merge with them.
-        """
-        if self.state not in (self.STATE_PROCESSING, self.STATE_COMPLETED):
-            raise RuntimeError("Nothing to continue from")
+        # Check max sleep duration (2 hours)
+        sleep_duration = time.time() - self._sleep_wall_time
+        if sleep_duration > 7200:
+            logger.info("Sleep exceeded 2 hours (%.0f s), auto-finalizing", sleep_duration)
+            self._sleeping = False
+            self._finalize_and_process()
+            return
 
-        # Stash current session results for merging into the next segment
-        if self._session:
-            prev_batch = self._session.results.get_batch_result()
-            prev_transcript = self._session.results.get_cleaned_transcript()
-            if prev_batch:
-                self._previous_batch_result = prev_batch
-            if prev_transcript:
-                self._previous_cleaned_transcript = prev_transcript
+        # Try to auto-resume recording into a new segment
+        try:
+            self.audio_capture.reinitialize()
 
-        # Transition to idle so start_recording accepts
-        self.state = self.STATE_IDLE
-        # Start fresh recording (creates a new session)
-        self.start_recording(mic_index, loopback_index)
-        logger.info("Continued recording after sleep (previous results stashed)")
+            mic_device = self._find_device(self._selected_mic_index, is_loopback=False) if self._selected_mic_index is not None else None
+            loopback_device = self._find_device(self._selected_sys_index, is_loopback=True) if self._selected_sys_index is not None else None
+
+            if not mic_device and not loopback_device:
+                raise RuntimeError("No audio devices found after wake")
+
+            # Start new recorder
+            recordings_dir = Path(self.settings.recordings_dir) if self.settings.recordings_dir else self.data_dir / "recordings"
+            self._recorder = WavRecorder(recordings_dir)
+            self._recorder.start()
+
+            # Set up new mixer
+            self._mixer = AudioMixer(
+                on_mixed_chunk=self._on_mixed_audio,
+                has_mic=mic_device is not None,
+                has_loopback=loopback_device is not None,
+            )
+
+            # Start capture
+            self.audio_capture.start_capture(
+                mic_device=mic_device,
+                loopback_device=loopback_device,
+                on_audio_chunk=self._on_audio_chunk,
+                on_level_update=self._on_level_update,
+            )
+
+            self._segment_start_time = time.monotonic()
+
+            # Reset silence tracking
+            self._recording_silence_start = None
+            self._auto_stop_countdown_active = False
+
+            # Reset health monitor
+            self._health_monitor.reset()
+
+            # Refresh Fibery recording lock
+            self._last_lock_refresh = time.monotonic()
+            if self._session and self._session.context.entity and self._session.context.fibery_client:
+                try:
+                    self._session.context.fibery_client.set_recording_lock(
+                        self._session.context.entity, self._build_lock_value()
+                    )
+                except Exception as e:
+                    logger.warning("Failed to refresh lock on wake: %s", e)
+
+            self._sleeping = False
+            logger.info("Auto-resumed recording after sleep (%.0f s asleep, %.1f s recorded so far)",
+                        sleep_duration, self._accumulated_recording_secs)
+
+            # Tell JS to resume the timer
+            self._notify_js(f"window.onWakeResumeTimer({self._accumulated_recording_secs})")
+
+        except Exception as e:
+            logger.error("Failed to resume recording after wake: %s", e)
+            self._sleeping = False
+            try:
+                self._finalize_and_process()
+            except Exception as e2:
+                logger.error("Finalize also failed: %s", e2)
+                self.state = self.STATE_COMPLETED
+            self._notify_js(f"window.onWakeResumeFailed({json.dumps(str(e))})")
 
     # --- Batch Processing ---
 
@@ -983,18 +1205,6 @@ class FiberyTranscriptApp:
                 compressed_path=compressed_path,
                 word_boost=word_boost,
             )
-
-            # Merge with previous recording segment if continuing after sleep
-            if self._previous_batch_result:
-                separator = {"speaker": "—", "text": "[Recording resumed after sleep]"}
-                merged_utterances = (
-                    self._previous_batch_result["utterances"]
-                    + [separator]
-                    + result["utterances"]
-                )
-                result["utterances"] = merged_utterances
-                self._previous_batch_result = None
-                logger.info("Merged with previous recording segment (%d total utterances)", len(merged_utterances))
 
             results.set_batch_result(result)
 
@@ -1049,19 +1259,7 @@ class FiberyTranscriptApp:
             else:
                 results.set_cleaned_transcript(raw_text)
 
-            # Merge with previous cleaned transcript if continuing after sleep
             cleaned_transcript = results.get_cleaned_transcript()
-            if self._previous_cleaned_transcript:
-                cleaned_transcript = (
-                    self._previous_cleaned_transcript
-                    + "\n\n---\n*[Recording resumed after sleep]*\n\n"
-                    + cleaned_transcript
-                )
-                results.set_cleaned_transcript(cleaned_transcript)
-                self._previous_cleaned_transcript = None
-                logger.info("Merged cleaned transcript with previous segment")
-            else:
-                cleaned_transcript = results.get_cleaned_transcript()
 
             # Final stale check before completing
             if _stale():
@@ -1734,17 +1932,38 @@ class FiberyTranscriptApp:
 
         Used during shutdown to ensure WAV/OGG files are properly finalized
         (headers written, files closed) even though we won't transcribe.
+        Handles both active recording and sleeping (paused) states.
         """
         with self._stop_lock:
             if self.state != self.STATE_RECORDING:
                 return
             logger.info("Emergency stop: saving recording files before shutdown")
-            self.audio_capture.stop_capture()
-            if self._mixer:
-                self._mixer.flush()
-                self._mixer = None
-            if self._recorder:
-                self._recorder.stop()
+
+            if self._sleeping:
+                # Already paused — just merge saved segments
+                self._sleeping = False
+            else:
+                # Active recording — stop capture and save current segment
+                try:
+                    self.audio_capture.stop_capture()
+                except Exception as e:
+                    logger.warning("Error stopping capture during emergency: %s", e)
+                if self._mixer:
+                    self._mixer.flush()
+                    self._mixer = None
+                if self._recorder:
+                    seg_path = self._recorder.stop()
+                    if seg_path:
+                        self._recording_segments.append(seg_path)
+                    self._recorder = None
+
+            # Merge all segments into a single file
+            if self._recording_segments:
+                try:
+                    self._finalize_segments()
+                except Exception as e:
+                    logger.warning("Failed to merge segments during emergency stop: %s", e)
+
             self.state = self.STATE_IDLE
 
     def begin_shutdown(self) -> None:

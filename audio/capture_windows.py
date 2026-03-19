@@ -202,6 +202,19 @@ class WindowsAudioCapture(AudioCapture):
 
             self._loopback_stream = stream
 
+            # Pre-compute resampling parameters once (avoids per-chunk import and gcd)
+            need_resample = native_rate != target_sample_rate
+            resample_func = None
+            rs_up = 1
+            rs_down = 1
+            if need_resample:
+                from scipy.signal import resample_poly as _resample_poly
+                from math import gcd
+                g = gcd(target_sample_rate, native_rate)
+                rs_up = target_sample_rate // g
+                rs_down = native_rate // g
+                resample_func = _resample_poly
+
             while self._capturing:
                 try:
                     data = stream.read(chunk_size, exception_on_overflow=False)
@@ -216,13 +229,8 @@ class WindowsAudioCapture(AudioCapture):
                     samples = samples.reshape(-1, native_channels).mean(axis=1).astype(np.int16)
 
                 # Resample if rates differ (polyphase with anti-aliasing)
-                if native_rate != target_sample_rate:
-                    from scipy.signal import resample_poly
-                    from math import gcd
-                    g = gcd(target_sample_rate, native_rate)
-                    up = target_sample_rate // g
-                    down = native_rate // g
-                    resampled = resample_poly(samples.astype(np.float32), up, down)
+                if need_resample:
+                    resampled = resample_func(samples.astype(np.float32), rs_up, rs_down)
                     samples = resampled.astype(np.int16)
 
                 pcm = samples.tobytes()

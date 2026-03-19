@@ -121,15 +121,6 @@ class ApiBridge:
             logger.error("Failed to stop recording: %s", e)
             return {"success": False, "error": str(e)}
 
-    def continue_recording(self, mic_index: Optional[int], loopback_index: Optional[int]) -> dict:
-        """Continue recording after sleep interruption, merging transcripts."""
-        try:
-            self._app.continue_recording(mic_index, loopback_index)
-            return {"success": True}
-        except Exception as e:
-            logger.error("Failed to continue recording: %s", e)
-            return {"success": False, "error": str(e)}
-
     def auto_stop_from_silence(self) -> dict:
         """Called by JS when silence countdown reaches zero."""
         try:

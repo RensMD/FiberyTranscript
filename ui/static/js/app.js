@@ -29,6 +29,7 @@ async function callApi(method, ...args) {
 let isRecording = false;
 let timerInterval = null;
 let startTime = null;
+let timerAccumulatedMs = 0;
 let fiberyValidated = false;      // true once the link has been validated
 let currentFiberyUrl = '';        // the validated URL
 let generatedSummary = '';        // cached summary text from last successful summarize
@@ -71,8 +72,6 @@ const uploadCollapsible = document.getElementById('uploadCollapsible');
 const sendPanelCollapsible = document.getElementById('sendPanelCollapsible');
 const newMeetingBtn = document.getElementById('newMeetingBtn');
 const retryBatchBtn = document.getElementById('retryBatchBtn');
-const continueRecordingBanner = document.getElementById('continueRecordingBanner');
-const continueRecordingBtn = document.getElementById('continueRecordingBtn');
 
 // Open entity link in the in-app Fibery panel
 document.getElementById('entityLink').addEventListener('click', (e) => {
@@ -777,30 +776,6 @@ newMeetingBtn.addEventListener('click', async () => {
     resetSession();
 });
 
-// === Continue Recording after sleep ===
-continueRecordingBtn.addEventListener('click', async () => {
-    const micIdx = micSelect.value !== '' ? parseInt(micSelect.value) : null;
-    const loopIdx = loopbackSelect.value !== '' ? parseInt(loopbackSelect.value) : null;
-
-    if (micIdx === null && loopIdx === null) {
-        showToast('Please select at least one audio source.', 'warning');
-        return;
-    }
-
-    try {
-        await callApi('continue_recording', micIdx, loopIdx);
-        continueRecordingBanner.classList.add('hidden');
-        isRecording = true;
-        setStatus('recording', 'Recording');
-        recordingMetaCollapsible.classList.remove('collapsed');
-        startTimer();
-        newMeetingBtn.classList.add('hidden');
-        showToast('Recording resumed. Transcripts will be merged.', 'info', 5000);
-    } catch (err) {
-        showToast('Failed to continue recording: ' + err, 'error');
-    }
-});
-
 async function resetSession() {
     // Full reset: clear Python session data (transcript, summary, state)
     await window.pywebview.api.reset_session();
@@ -820,6 +795,7 @@ async function resetSession() {
     audioHealthEl.classList.add('hidden');
     setStatus('', '');
     recordTimer.textContent = '00:00:00';
+    timerAccumulatedMs = 0;
 
     // Hide new meeting link
     newMeetingBtn.classList.add('hidden');
@@ -854,9 +830,6 @@ async function resetSession() {
 
     // Clear warnings
     fiberyMissingWarning.classList.add('hidden');
-
-    // Hide continue recording banner
-    continueRecordingBanner.classList.add('hidden');
 }
 
 // === Recording Controls ===
@@ -922,6 +895,7 @@ async function startRecording() {
         audioStorageCollapsible.classList.remove('collapsed');
     }
 
+    timerAccumulatedMs = 0;
     startTimer();
 
     // Warn if no meeting selected
@@ -1004,7 +978,7 @@ async function stopRecording() {
 function startTimer() {
     startTime = Date.now();
     timerInterval = setInterval(() => {
-        recordTimer.textContent = formatTime(Date.now() - startTime);
+        recordTimer.textContent = formatTime(timerAccumulatedMs + (Date.now() - startTime));
     }, 1000);
 }
 
@@ -1055,12 +1029,6 @@ window.onProcessingComplete = function() {
     showSendActions();
     newMeetingBtn.classList.remove('hidden');
 
-    // Enable continue recording button if banner is visible (sleep interruption)
-    if (!continueRecordingBanner.classList.contains('hidden')) {
-        continueRecordingBtn.disabled = false;
-        continueRecordingBtn.textContent = 'Continue Recording';
-    }
-
     // Warn if transcript is empty (e.g. very short recording with no speech).
     // Check both cleaned text and raw DOM elements — cleaned text can be empty
     // due to Gemini cleanup even when utterances exist.
@@ -1069,8 +1037,8 @@ window.onProcessingComplete = function() {
     }
 
     // Safe to resume level monitoring now that batch processing is done
+    // (background scanning is restarted by Python at end of batch processing)
     startMonitoring();
-    window.pywebview.api.start_background_scanning();
 
     // Reset upload state but keep section hidden until "New meeting" reset
     selectedUploadPath = null;
@@ -1148,18 +1116,29 @@ window.onAutoStopComplete = function() {
 
 // === System Sleep / Wake ===
 
-window.onSleepStop = function() {
+window.onSleepPauseTimer = function(accumulatedSeconds) {
+    // Just freeze the timer — no state change, no UI indication
+    stopTimer();
+    timerAccumulatedMs = accumulatedSeconds * 1000;
+};
+
+window.onWakeResumeTimer = function(accumulatedSeconds) {
+    timerAccumulatedMs = accumulatedSeconds * 1000;
+    startTimer();
+};
+
+window.onWakeResumeFailed = function(errorMsg) {
     isRecording = false;
     stopTimer();
     setStatus('processing', 'Processing...');
+    showToast('Could not resume after sleep: ' + errorMsg, 'warning', 10000);
 };
 
-window.onSleepWakeNotification = function() {
-    showToast('Recording interrupted by laptop sleep. Audio file saved.', 'warning', 10000);
-    // Show continue recording banner (button disabled until processing completes)
-    continueRecordingBanner.classList.remove('hidden');
-    continueRecordingBtn.disabled = true;
-    continueRecordingBtn.textContent = 'Processing...';
+// Called when recording ends and transitions to processing (e.g., after sleep timeout/failure)
+window.onRecordingEndedForProcessing = function() {
+    isRecording = false;
+    stopTimer();
+    setStatus('processing', 'Processing...');
 };
 
 window.onSleepDuringProcessing = function() {
