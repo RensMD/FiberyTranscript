@@ -36,9 +36,6 @@ VIAddVersionKey "LegalCopyright" "Copyright Fibery Transcript"
 !define MUI_UNICON "..\ui\static\icon.ico"
 !define MUI_ABORTWARNING
 
-; --- Component descriptions ---
-!define MUI_COMPONENTSPAGE_SMALLDESC
-
 ; --- Variables ---
 Var SettingsDir          ; %APPDATA%\Fibery Transcript
 Var SettingsFile         ; full path to settings.json
@@ -54,6 +51,7 @@ Var RadioLocal
 Var LblRecDir
 Var TxtRecDir
 Var BtnBrowse
+Var ChkAutoStart
 
 ; Configuration values (pre-populated from existing settings or defaults)
 Var CfgDisplayName
@@ -64,7 +62,6 @@ Var CfgAutoStart          ; "true" or "false"
 ; --- Pages ---
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
-!insertmacro MUI_PAGE_COMPONENTS
 Page custom ConfigPageCreate ConfigPageLeave
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -75,10 +72,9 @@ Page custom ConfigPageCreate ConfigPageLeave
 !insertmacro MUI_LANGUAGE "English"
 
 ; ============================================================
-; Sections (defined before .onInit so ${SecStartup} is available)
+; Installation
 ; ============================================================
-Section "Fibery Transcript" SecMain
-    SectionIn RO  ; required, cannot be unchecked
+Section "Install"
     SetOutPath "$INSTDIR"
 
     ; Copy all files from PyInstaller output (overwrites existing on upgrade)
@@ -108,6 +104,13 @@ Section "Fibery Transcript" SecMain
     IntFmt $0 "0x%08X" $0
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript" "EstimatedSize" "$0"
 
+    ; --- Start on boot: set or remove registry Run key ---
+    ${If} $CfgAutoStart == "true"
+        WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FiberyTranscript" "$INSTDIR\FiberyTranscript.exe"
+    ${Else}
+        DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FiberyTranscript"
+    ${EndIf}
+
     ; --- Write installer_prefs.json for the app to merge on first launch ---
     CreateDirectory "$SettingsDir"
 
@@ -119,39 +122,19 @@ Section "Fibery Transcript" SecMain
         StrCpy $1 ""
     ${EndIf}
 
-    ; Determine auto_start value from section selection
-    SectionGetFlags ${SecStartup} $2
-    IntOp $2 $2 & 1
-    ${If} $2 == 1
-        StrCpy $3 "true"
-    ${Else}
-        StrCpy $3 "false"
-    ${EndIf}
-
     FileOpen $4 "$SettingsDir\installer_prefs.json" w
     FileWrite $4 '{$\r$\n'
     FileWrite $4 '  "display_name": "$CfgDisplayName",$\r$\n'
     FileWrite $4 '  "audio_storage": "$CfgAudioStorage",$\r$\n'
     FileWrite $4 '  "recordings_dir": "$1",$\r$\n'
-    FileWrite $4 '  "auto_start_on_boot": $3$\r$\n'
+    FileWrite $4 '  "auto_start_on_boot": $CfgAutoStart$\r$\n'
     FileWrite $4 '}$\r$\n'
     FileClose $4
 
 SectionEnd
 
-Section /o "Start on boot" SecStartup
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FiberyTranscript" "$INSTDIR\FiberyTranscript.exe"
-SectionEnd
-
-; --- Section descriptions ---
-!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-    !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "Installs Fibery Transcript and its shortcuts."
-    !insertmacro MUI_DESCRIPTION_TEXT ${SecStartup} "Automatically start Fibery Transcript when Windows starts."
-!insertmacro MUI_FUNCTION_DESCRIPTION_END
-
 ; ============================================================
 ; Initialisation — detect upgrade, close running app, read settings
-; (placed after sections so ${SecStartup} is defined)
 ; ============================================================
 Function .onInit
     ; Determine settings directory
@@ -194,9 +177,19 @@ Function .onInit
     ; --- Read existing settings to pre-populate ---
     IfFileExists $SettingsFile 0 SkipReadSettings
 
-    ; Use PowerShell to read JSON values (available on all modern Windows)
+    ; Write a temp PowerShell script to read JSON keys (avoids inline escaping issues)
+    FileOpen $0 "$TEMP\ft_read_setting.ps1" w
+    FileWrite $0 "param([string]$$key)$\r$\n"
+    FileWrite $0 "try {$\r$\n"
+    FileWrite $0 "  $$s = Get-Content -Raw -LiteralPath '$SettingsFile' | ConvertFrom-Json$\r$\n"
+    FileWrite $0 "  $$v = $$s.$$key$\r$\n"
+    FileWrite $0 "  if ($$v -is [bool]) { if ($$v) { 'true' } else { 'false' } }$\r$\n"
+    FileWrite $0 "  elseif ($$v) { Write-Host $$v -NoNewline }$\r$\n"
+    FileWrite $0 "} catch {}$\r$\n"
+    FileClose $0
+
     ; Read display_name
-    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -Command "try{$$s=Get-Content -Raw -LiteralPath ''$SettingsFile''|ConvertFrom-Json;if($$s.display_name){Write-Host $$s.display_name -NoNewline}}catch{}"'
+    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$TEMP\ft_read_setting.ps1" display_name'
     Pop $0  ; exit code
     Pop $1  ; output
     ${If} $1 != ""
@@ -204,7 +197,7 @@ Function .onInit
     ${EndIf}
 
     ; Read audio_storage
-    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -Command "try{$$s=Get-Content -Raw -LiteralPath ''$SettingsFile''|ConvertFrom-Json;if($$s.audio_storage){Write-Host $$s.audio_storage -NoNewline}}catch{}"'
+    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$TEMP\ft_read_setting.ps1" audio_storage'
     Pop $0
     Pop $1
     ${If} $1 != ""
@@ -212,7 +205,7 @@ Function .onInit
     ${EndIf}
 
     ; Read recordings_dir
-    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -Command "try{$$s=Get-Content -Raw -LiteralPath ''$SettingsFile''|ConvertFrom-Json;if($$s.recordings_dir){Write-Host $$s.recordings_dir -NoNewline}}catch{}"'
+    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$TEMP\ft_read_setting.ps1" recordings_dir'
     Pop $0
     Pop $1
     ${If} $1 != ""
@@ -220,21 +213,16 @@ Function .onInit
     ${EndIf}
 
     ; Read auto_start_on_boot
-    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -Command "try{$$s=Get-Content -Raw -LiteralPath ''$SettingsFile''|ConvertFrom-Json;if($$s.auto_start_on_boot -eq $$true){Write-Host ''true'' -NoNewline}else{Write-Host ''false'' -NoNewline}}catch{}"'
+    nsExec::ExecToStack 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$TEMP\ft_read_setting.ps1" auto_start_on_boot'
     Pop $0
     Pop $1
     ${If} $1 != ""
         StrCpy $CfgAutoStart $1
     ${EndIf}
 
-    SkipReadSettings:
+    Delete "$TEMP\ft_read_setting.ps1"
 
-    ; Pre-check "Start on boot" section if already enabled
-    ${If} $CfgAutoStart == "true"
-        SectionGetFlags ${SecStartup} $0
-        IntOp $0 $0 | 1
-        SectionSetFlags ${SecStartup} $0
-    ${EndIf}
+    SkipReadSettings:
 
 FunctionEnd
 
@@ -253,16 +241,16 @@ Function ConfigPageCreate
     ; --- Your first name ---
     ${NSD_CreateLabel} 0 0 100% 12u "Your first name (used to identify who is recording):"
     Pop $LblName
-    ${NSD_CreateText} 0 16u 60% 14u "$CfgDisplayName"
+    ${NSD_CreateText} 0 14u 60% 14u "$CfgDisplayName"
     Pop $TxtName
 
     ; --- Save location ---
-    ${NSD_CreateLabel} 0 46u 100% 12u "Default save location for transcripts and summaries:"
+    ${NSD_CreateLabel} 0 38u 100% 12u "Default save location for transcripts and summaries:"
     Pop $LblStorage
 
-    ${NSD_CreateRadioButton} 0 62u 30% 12u "Fibery"
+    ${NSD_CreateRadioButton} 0 52u 30% 12u "Fibery"
     Pop $RadioFibery
-    ${NSD_CreateRadioButton} 32% 62u 30% 12u "Local only"
+    ${NSD_CreateRadioButton} 32% 52u 30% 12u "Local only"
     Pop $RadioLocal
 
     ; Pre-select the right radio button
@@ -273,13 +261,20 @@ Function ConfigPageCreate
     ${EndIf}
 
     ; --- Recordings directory ---
-    ${NSD_CreateLabel} 0 92u 100% 12u "Recordings folder (leave empty for default):"
+    ${NSD_CreateLabel} 0 74u 100% 12u "Recordings folder (leave empty for default):"
     Pop $LblRecDir
-    ${NSD_CreateText} 0 108u 78% 14u "$CfgRecordingsDir"
+    ${NSD_CreateText} 0 88u 78% 14u "$CfgRecordingsDir"
     Pop $TxtRecDir
-    ${NSD_CreateButton} 80% 107u 20% 16u "Browse..."
+    ${NSD_CreateButton} 80% 87u 20% 16u "Browse..."
     Pop $BtnBrowse
     ${NSD_OnClick} $BtnBrowse ConfigPageBrowse
+
+    ; --- Start on boot ---
+    ${NSD_CreateCheckbox} 0 114u 100% 12u "Start Fibery Transcript when Windows starts"
+    Pop $ChkAutoStart
+    ${If} $CfgAutoStart == "true"
+        ${NSD_Check} $ChkAutoStart
+    ${EndIf}
 
     nsDialogs::Show
 FunctionEnd
@@ -303,6 +298,14 @@ Function ConfigPageLeave
         StrCpy $CfgAudioStorage "local"
     ${Else}
         StrCpy $CfgAudioStorage "fibery"
+    ${EndIf}
+
+    ; Read auto-start checkbox
+    ${NSD_GetState} $ChkAutoStart $0
+    ${If} $0 == ${BST_CHECKED}
+        StrCpy $CfgAutoStart "true"
+    ${Else}
+        StrCpy $CfgAutoStart "false"
     ${EndIf}
 FunctionEnd
 
