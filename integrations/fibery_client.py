@@ -401,8 +401,12 @@ class FiberyClient:
 
         logger.info("Fibery entity %s updated", entity.uuid)
 
-    def update_transcript_only(self, entity: FiberyEntity, transcript: str) -> None:
-        """Write only the Transcript field to a Fibery entity."""
+    def update_transcript_only(self, entity: FiberyEntity, transcript: str, append: bool = False) -> None:
+        """Write only the Transcript field to a Fibery entity.
+
+        Args:
+            append: If True, read existing content and append with separator.
+        """
         if not entity.uuid:
             self.get_entity_uuid(entity)
 
@@ -412,11 +416,19 @@ class FiberyClient:
         if not secret:
             logger.warning("No document secret for Transcript field, skipping")
             return
-        self._update_document(secret, self._text_to_html(transcript))
-        logger.info("Updated Transcript field (secret=%s…)", secret[:8])
 
-    def update_summary_only(self, entity: FiberyEntity, ai_summary: str) -> None:
-        """Write only the AI Summary field to a Fibery entity."""
+        if append:
+            transcript = self._append_content(secret, transcript)
+
+        self._update_document(secret, self._text_to_html(transcript))
+        logger.info("Updated Transcript field (secret=%s…, append=%s)", secret[:8], append)
+
+    def update_summary_only(self, entity: FiberyEntity, ai_summary: str, append: bool = False) -> None:
+        """Write only the AI Summary field to a Fibery entity.
+
+        Args:
+            append: If True, read existing content and append with separator.
+        """
         if not entity.uuid:
             self.get_entity_uuid(entity)
 
@@ -426,8 +438,26 @@ class FiberyClient:
         if not secret:
             logger.warning("No document secret for AI Summary field, skipping")
             return
+
+        if append:
+            ai_summary = self._append_content(secret, ai_summary)
+
         self._update_document(secret, self._text_to_html(ai_summary))
-        logger.info("Updated AI Summary field (secret=%s…)", secret[:8])
+        logger.info("Updated AI Summary field (secret=%s…, append=%s)", secret[:8], append)
+
+    def _append_content(self, secret: str, new_text: str) -> str:
+        """Read existing document content and append new text with a separator.
+
+        Returns the combined text, or just new_text if the document is empty.
+        """
+        try:
+            existing = self._get_document_content(secret)
+            if existing and existing.strip():
+                logger.info("Appending to existing content (%d chars)", len(existing))
+                return f"{existing.strip()}\n\n---\n\n{new_text}"
+        except Exception as e:
+            logger.warning("Could not read existing content for append, replacing: %s", e)
+        return new_text
 
     # --- Document helpers ---
 

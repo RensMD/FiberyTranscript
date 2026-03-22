@@ -166,6 +166,23 @@
                     </div>
                 </div>
 
+                <!-- Transcript Mode Toggle (hidden until meeting linked) -->
+                <div class="collapsible collapsed" id="transcriptModeCollapsible">
+                    <div class="audio-storage-group" id="transcriptModeGroup">
+                        <span class="audio-storage-label">Transcript</span>
+                        <div class="summary-style-options" role="radiogroup" aria-label="Transcript mode">
+                            <div class="summary-style-option">
+                                <input type="radio" id="modeAppend" name="transcriptMode" value="append" checked>
+                                <label for="modeAppend">Append</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="radio" id="modeReplace" name="transcriptMode" value="replace">
+                                <label for="modeReplace">Replace</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Upload section (hidden during recording) -->
                 <div class="collapsible" id="uploadCollapsible">
                     <div>
@@ -388,15 +405,19 @@
         </div>
     </div>
 
-    <!-- Silence Auto-Stop Countdown -->
+    <!-- Silence/Sleep Decision Overlay -->
     <div class="silence-overlay" id="silenceOverlay">
         <div class="silence-panel">
-            <h3 class="silence-title">Meeting seems to have ended</h3>
-            <p class="silence-desc">No audio detected for 3 minutes. Recording will auto-stop in:</p>
-            <div class="silence-countdown" id="silenceCountdown">60</div>
-            <div class="silence-actions">
-                <button class="action-btn" id="silenceDismissBtn">Keep Recording</button>
-                <button class="action-btn silence-stop-btn" id="silenceStopNowBtn">Stop Now</button>
+            <h3 class="silence-title">Did the meeting end?</h3>
+            <p class="silence-desc" id="decisionDesc"></p>
+            <!-- <p class="decision-recorded">Recorded: <span id="decisionTimer">00:00</span></p> -->
+            <div class="silence-actions decision-actions">
+                <button class="action-btn" id="decisionContinueBtn">Continue Recording</button>
+                <div id="decisionCheckpointGroup">
+                    <select class="decision-select" id="checkpointSelect" style="display:none"></select>
+                    <button class="action-btn decision-checkpoint-btn" id="decisionEndAtBtn">End at checkpoint</button>
+                </div>
+                <button class="action-btn silence-stop-btn" id="decisionEndNowBtn">End until now</button>
             </div>
         </div>
     </div>

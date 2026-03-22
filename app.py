@@ -5,6 +5,7 @@ import json
 import logging
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +20,18 @@ from session import RecordingSession, SessionContext
 from transcription.formatter import format_diarized_transcript
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RecordingCheckpoint:
+    """A point-in-time marker during recording for the decision popup.
+
+    Created on sleep events (laptop close) or silence detection milestones.
+    The user can choose to discard all audio after a given checkpoint.
+    """
+    type: str            # "sleep" or "silence"
+    meeting_secs: float  # meeting duration at checkpoint (excluding sleep/silence gaps)
+    segment_index: int   # len(_recording_segments) when created; keep segments[0:segment_index]
 
 
 def _friendly_error(e: Exception) -> str:
@@ -100,8 +113,13 @@ class FiberyTranscriptApp:
 
         # Silence auto-stop tracking (active during STATE_RECORDING)
         self._recording_silence_start: Optional[float] = None
-        self._auto_stop_countdown_active: bool = False
         self._last_silence_check: float = 0.0
+
+        # Decision popup & checkpoint system
+        self._checkpoints: list[RecordingCheckpoint] = []
+        self._decision_popup_active: bool = False
+        self._milestone_recording_secs: float = 0.0
+        self._silence_checkpoint_added: bool = False  # prevent re-adding silence checkpoint while popup open
 
         # Power monitor (set by main.py)
         self._power_monitor = None
@@ -113,6 +131,9 @@ class FiberyTranscriptApp:
         self._accumulated_recording_secs: float = 0.0  # total recording time pre-sleep
         self._segment_start_time: float = 0.0        # monotonic time when segment started
         self._sleep_wall_time: float = 0.0           # wall-clock time when sleep began
+
+        # Append/replace mode for Fibery transcript/summary writes (per-meeting, not persisted)
+        self._transcript_mode: str = "append"  # "append" or "replace"
 
         # Lock refresh tracking (refresh every 10 min during long recordings)
         self._last_lock_refresh: float = 0.0
@@ -163,6 +184,11 @@ class FiberyTranscriptApp:
         self._segment_ogg_paths = []
         self._sleeping = False
         self._accumulated_recording_secs = 0.0
+        self._checkpoints = []
+        self._decision_popup_active = False
+        self._milestone_recording_secs = 0.0
+        self._silence_checkpoint_added = False
+        self._transcript_mode = "append"
         self.state = self.STATE_IDLE
         logger.info("Session reset (token=%d)", self._session_token)
 
@@ -381,8 +407,8 @@ class FiberyTranscriptApp:
     _SILENCE_THRESHOLD = 0.005   # RMS below this = "silent"
     _SILENCE_TICKS_NEEDED = 2    # consecutive silent ticks before scanning
 
-    _RECORDING_SILENCE_DURATION = 180.0   # seconds of silence before countdown popup
-    _AUTO_STOP_COUNTDOWN_SECONDS = 60     # countdown duration shown in popup
+    _RECORDING_SILENCE_DURATION = 60.0    # seconds of silence before decision popup
+    _MIN_SLEEP_FOR_CHECKPOINT = 60        # minimum sleep seconds to create checkpoint/popup
 
     def _background_scan_loop(self) -> None:
         """Background thread: only scans other devices when a selected source is silent."""
@@ -460,7 +486,10 @@ class FiberyTranscriptApp:
             self.audio_capture.stop_capture()
 
         self._recording_silence_start = None
-        self._auto_stop_countdown_active = False
+        self._checkpoints = []
+        self._decision_popup_active = False
+        self._milestone_recording_secs = 0.0
+        self._silence_checkpoint_added = False
 
         # Reset multi-segment tracking for a fresh recording
         self._recording_segments = []
@@ -594,6 +623,10 @@ class FiberyTranscriptApp:
 
     def _stop_recording_inner(self) -> None:
         """Inner stop logic (caller must hold _stop_lock)."""
+        # Clear decision popup state if active
+        self._decision_popup_active = False
+        self._checkpoints = []
+
         # Release recording lock
         self.release_recording_lock()
 
@@ -989,55 +1022,226 @@ class FiberyTranscriptApp:
             if self._recording_silence_start is None:
                 self._recording_silence_start = now
             elapsed = now - self._recording_silence_start
-            if (elapsed >= self._RECORDING_SILENCE_DURATION
-                    and not self._auto_stop_countdown_active):
-                self._auto_stop_countdown_active = True
-                logger.info("Silence detected for %.0fs, showing countdown popup", elapsed)
-                self._notify_js(
-                    f"window.onSilenceCountdownStart({self._AUTO_STOP_COUNTDOWN_SECONDS})"
-                )
-        else:
-            # Audio resumed
-            self._recording_silence_start = None
-            if self._auto_stop_countdown_active:
-                self._auto_stop_countdown_active = False
-                logger.info("Audio resumed, cancelling silence countdown")
-                self._notify_js("window.onSilenceCountdownCancel()")
 
-    def auto_stop_from_silence(self) -> None:
-        """Called from JS when the silence countdown reaches zero."""
-        self._auto_stop_countdown_active = False
-        logger.info("Auto-stopping recording due to silence")
+            if elapsed >= self._RECORDING_SILENCE_DURATION:
+                if self._decision_popup_active:
+                    # Popup already showing — add a silence checkpoint if not already done
+                    if not self._silence_checkpoint_added:
+                        self._silence_checkpoint_added = True
+                        logger.info("Silence detected while decision popup open, adding checkpoint")
+                        threading.Thread(
+                            target=self._save_milestone_segment, args=("silence",), daemon=True
+                        ).start()
+                else:
+                    # Show decision popup directly (no countdown)
+                    self._decision_popup_active = True
+                    self._silence_checkpoint_added = True
+                    logger.info("Silence detected for %.0fs, showing decision popup", elapsed)
+                    threading.Thread(
+                        target=self._save_milestone_segment,
+                        args=("silence", True), daemon=True
+                    ).start()
+        else:
+            # Audio resumed — reset silence tracking
+            self._recording_silence_start = None
+            self._silence_checkpoint_added = False
+
+    def _save_milestone_segment(self, checkpoint_type: str, show_popup: bool = False) -> None:
+        """Save current segment as a milestone and start a new one.
+
+        Runs on a background thread. Creates a RecordingCheckpoint.
+        If show_popup is True, shows the decision popup after creating the checkpoint.
+        """
+        with self._stop_lock:
+            if self.state != self.STATE_RECORDING or not self._recorder:
+                return
+
+            # Calculate milestone time (meeting duration excluding silence/sleep gaps)
+            segment_elapsed = time.monotonic() - self._segment_start_time
+            silence_elapsed = (
+                (time.monotonic() - self._recording_silence_start)
+                if self._recording_silence_start else 0.0
+            )
+            useful_secs = max(0, segment_elapsed - silence_elapsed)
+            self._milestone_recording_secs = self._accumulated_recording_secs + useful_secs
+
+            # Stop current recorder and save segment
+            seg_path = self._recorder.stop()
+            if seg_path:
+                self._recording_segments.append(seg_path)
+            ogg = self._recorder.compressed_path
+            if ogg:
+                self._segment_ogg_paths.append(ogg)
+
+            # Accumulate full segment time (including silence, for timer accuracy)
+            self._accumulated_recording_secs += segment_elapsed
+
+            # Create checkpoint
+            checkpoint = RecordingCheckpoint(
+                type=checkpoint_type,
+                meeting_secs=self._milestone_recording_secs,
+                segment_index=len(self._recording_segments),
+            )
+            self._checkpoints.append(checkpoint)
+            logger.info(
+                "Checkpoint created: type=%s, meeting_secs=%.1f, segment_index=%d",
+                checkpoint_type, self._milestone_recording_secs, checkpoint.segment_index,
+            )
+
+            # Start new recorder for background segment
+            recordings_dir = (
+                Path(self.settings.recordings_dir)
+                if self.settings.recordings_dir
+                else self.data_dir / "recordings"
+            )
+            self._recorder = WavRecorder(recordings_dir)
+            self._recorder.start()
+            self._segment_start_time = time.monotonic()
+
+            # Show or update the decision popup
+            if show_popup:
+                self._notify_js(
+                    f"window.onShowDecisionPopup({json.dumps(self._checkpoints_for_js())})"
+                )
+            elif self._decision_popup_active:
+                self._notify_js(
+                    f"window.onDecisionPopupUpdate({json.dumps(self._checkpoints_for_js())})"
+                )
+
+    def _checkpoints_for_js(self) -> dict:
+        """Build data dict for the decision popup JS."""
+        current_secs = self._accumulated_recording_secs + (
+            time.monotonic() - self._segment_start_time
+        )
+        return {
+            "checkpoints": [
+                {"type": cp.type, "meetingSecs": cp.meeting_secs, "index": i}
+                for i, cp in enumerate(self._checkpoints)
+            ],
+            "currentRecordingSecs": current_secs,
+        }
+
+    # --- Decision Popup Actions ---
+
+    def decision_continue_recording(self) -> None:
+        """User chose 'Continue Recording' from the decision popup.
+
+        Clears all checkpoints (confirmed as part of the meeting) and resumes.
+        """
+        self._decision_popup_active = False
+        self._checkpoints = []
+        self._recording_silence_start = None
+        self._silence_checkpoint_added = False
+
+        # Calculate actual accumulated time for timer resume
+        current_secs = self._accumulated_recording_secs + (
+            time.monotonic() - self._segment_start_time
+        )
+        logger.info("User chose to continue recording, checkpoints cleared (%.1f s total)", current_secs)
+        self._notify_js(f"window.onDecisionTimerResume({current_secs})")
+
+    def decision_end_now(self) -> None:
+        """User chose 'End Meeting Now' / 'Process Until Now' from the decision popup.
+
+        Stops recording, merges all segments, and processes.
+        """
+        self._decision_popup_active = False
+        self._checkpoints = []
+        logger.info("User chose to end meeting now, processing all segments")
         self.stop_recording()
         self._notify_js("window.onAutoStopComplete()")
 
-    def dismiss_silence_countdown(self) -> None:
-        """Called from JS when user clicks 'Keep Recording'.
+    def decision_end_at_checkpoint(self, checkpoint_index: int) -> None:
+        """User chose to process up to a specific checkpoint.
 
-        Resets the silence timer so detection can re-trigger after another
-        full silence duration (e.g. 3 minutes). Does NOT permanently disable.
+        Discards all segments after the checkpoint and processes the rest.
         """
-        self._auto_stop_countdown_active = False
-        self._recording_silence_start = None
-        logger.info("User dismissed silence countdown (will re-arm after next silence period)")
+        if checkpoint_index < 0 or checkpoint_index >= len(self._checkpoints):
+            logger.error("Invalid checkpoint index: %d", checkpoint_index)
+            return
+
+        checkpoint = self._checkpoints[checkpoint_index]
+        self._decision_popup_active = False
+        self._checkpoints = []
+        logger.info(
+            "User chose to end at checkpoint %d (%.1f s, segment_index=%d)",
+            checkpoint_index, checkpoint.meeting_secs, checkpoint.segment_index,
+        )
+
+        with self._stop_lock:
+            if self.state != self.STATE_RECORDING:
+                return
+
+            # Release recording lock
+            self.release_recording_lock()
+
+            # Stop current recording infrastructure
+            if not self._sleeping:
+                try:
+                    self.audio_capture.stop_capture()
+                except Exception as e:
+                    logger.warning("Error stopping capture: %s", e)
+                if self._mixer:
+                    self._mixer.flush()
+                    self._mixer = None
+                # Stop current recorder (discard — it's post-checkpoint audio)
+                if self._recorder:
+                    discard_path = self._recorder.stop()
+                    if discard_path:
+                        try:
+                            discard_path.unlink()
+                        except OSError:
+                            pass
+                    discard_ogg = self._recorder.compressed_path
+                    if discard_ogg:
+                        try:
+                            discard_ogg.unlink()
+                        except OSError:
+                            pass
+                    self._recorder = None
+            else:
+                self._sleeping = False
+
+            # Discard segments after the checkpoint
+            self._discard_segments_after(checkpoint.segment_index)
+
+        # Process remaining segments
+        self._finalize_and_process()
+        self._notify_js("window.onAutoStopComplete()")
+
+    def _discard_segments_after(self, keep_count: int) -> None:
+        """Delete segment WAV/OGG files after index keep_count and trim lists."""
+        discard_segments = self._recording_segments[keep_count:]
+        discard_oggs = self._segment_ogg_paths[keep_count:]
+
+        for seg in discard_segments:
+            try:
+                seg.unlink()
+                logger.debug("Discarded post-checkpoint segment: %s", seg.name)
+            except OSError as e:
+                logger.warning("Could not delete segment %s: %s", seg.name, e)
+
+        for ogg in discard_oggs:
+            try:
+                ogg.unlink()
+                logger.debug("Discarded post-checkpoint OGG: %s", ogg.name)
+            except OSError as e:
+                logger.warning("Could not delete OGG %s: %s", ogg.name, e)
+
+        self._recording_segments = self._recording_segments[:keep_count]
+        self._segment_ogg_paths = self._segment_ogg_paths[:keep_count]
 
     # --- System Sleep / Wake ---
 
     def on_system_sleep(self) -> None:
         """Called by power monitor when the system is going to sleep.
 
-        Instead of stopping the recording, we save the current segment and
-        pause. On wake, we auto-resume into a new segment. All segments are
-        merged into a single WAV when the user finally stops.
+        Saves the current segment and pauses. On wake, we auto-resume into a
+        new segment. All segments are merged when the user finally stops.
         """
         logger.info("System sleep detected, state=%s", self.state)
         if self.state != self.STATE_RECORDING or self._sleeping:
             return
-
-        # Cancel any active silence countdown
-        if self._auto_stop_countdown_active:
-            self._auto_stop_countdown_active = False
-            self._notify_js("window.onSilenceCountdownCancel()")
 
         # Stop audio capture (devices will be invalid after sleep)
         try:
@@ -1066,14 +1270,15 @@ class FiberyTranscriptApp:
         self._sleeping = True
         self._sleep_wall_time = time.time()
 
-        # Tell JS to freeze the timer (no state change, no UI indication)
+        # Tell JS to freeze the timer
         self._notify_js(f"window.onSleepPauseTimer({self._accumulated_recording_secs})")
 
     def on_system_wake(self) -> None:
         """Called by power monitor when the system wakes from sleep.
 
-        If we were sleeping (paused recording), auto-resume into a new segment.
-        If the sleep exceeded 2 hours, finalize instead.
+        Always auto-resumes recording. For sleeps ≥ 1 minute, creates a
+        checkpoint and shows/updates the decision popup so the user can
+        choose to continue, process everything, or process up to a checkpoint.
         """
         logger.info("System wake detected, sleeping=%s, state=%s", self._sleeping, self.state)
 
@@ -1087,79 +1292,131 @@ class FiberyTranscriptApp:
                 self._notify_js("window.onSleepDuringProcessing()")
             return
 
-        # Check max sleep duration (2 hours)
         sleep_duration = time.time() - self._sleep_wall_time
-        if sleep_duration > 7200:
-            logger.info("Sleep exceeded 2 hours (%.0f s), auto-finalizing", sleep_duration)
-            self._sleeping = False
-            self._finalize_and_process()
-            return
+        self._sleeping = False
 
-        # Try to auto-resume recording into a new segment
+        # Reset silence tracking BEFORE resume to prevent stale _recording_silence_start
+        # from triggering a false silence detection when audio callbacks start firing
+        self._recording_silence_start = None
+        self._silence_checkpoint_added = False
+
+        # Always try to auto-resume recording
         try:
-            self.audio_capture.reinitialize()
-
-            mic_device = self._find_device(self._selected_mic_index, is_loopback=False) if self._selected_mic_index is not None else None
-            loopback_device = self._find_device(self._selected_sys_index, is_loopback=True) if self._selected_sys_index is not None else None
-
-            if not mic_device and not loopback_device:
-                raise RuntimeError("No audio devices found after wake")
-
-            # Start new recorder
-            recordings_dir = Path(self.settings.recordings_dir) if self.settings.recordings_dir else self.data_dir / "recordings"
-            self._recorder = WavRecorder(recordings_dir)
-            self._recorder.start()
-
-            # Set up new mixer
-            self._mixer = AudioMixer(
-                on_mixed_chunk=self._on_mixed_audio,
-                has_mic=mic_device is not None,
-                has_loopback=loopback_device is not None,
-            )
-
-            # Start capture
-            self.audio_capture.start_capture(
-                mic_device=mic_device,
-                loopback_device=loopback_device,
-                on_audio_chunk=self._on_audio_chunk,
-                on_level_update=self._on_level_update,
-            )
-
-            self._segment_start_time = time.monotonic()
-
-            # Reset silence tracking
-            self._recording_silence_start = None
-            self._auto_stop_countdown_active = False
-
-            # Reset health monitor
-            self._health_monitor.reset()
-
-            # Refresh Fibery recording lock
-            self._last_lock_refresh = time.monotonic()
-            if self._session and self._session.context.entity and self._session.context.fibery_client:
-                try:
-                    self._session.context.fibery_client.set_recording_lock(
-                        self._session.context.entity, self._build_lock_value()
-                    )
-                except Exception as e:
-                    logger.warning("Failed to refresh lock on wake: %s", e)
-
-            self._sleeping = False
-            logger.info("Auto-resumed recording after sleep (%.0f s asleep, %.1f s recorded so far)",
-                        sleep_duration, self._accumulated_recording_secs)
-
-            # Tell JS to resume the timer
-            self._notify_js(f"window.onWakeResumeTimer({self._accumulated_recording_secs})")
-
+            self._resume_recording()
         except Exception as e:
             logger.error("Failed to resume recording after wake: %s", e)
-            self._sleeping = False
             try:
                 self._finalize_and_process()
             except Exception as e2:
                 logger.error("Finalize also failed: %s", e2)
                 self.state = self.STATE_COMPLETED
             self._notify_js(f"window.onWakeResumeFailed({json.dumps(str(e))})")
+            return
+
+        # Always resume timer immediately on wake (even for long sleeps).
+        # If we show a popup later, the popup JS will freeze the timer at milestone time.
+        # This ensures the timer isn't stuck if the popup _notify_js fails.
+        self._notify_js(f"window.onWakeResumeTimer({self._accumulated_recording_secs})")
+
+        if sleep_duration >= self._MIN_SLEEP_FOR_CHECKPOINT:
+            # Create a sleep checkpoint
+            checkpoint = RecordingCheckpoint(
+                type="sleep",
+                meeting_secs=self._accumulated_recording_secs,
+                segment_index=len(self._recording_segments),
+            )
+            self._checkpoints.append(checkpoint)
+            logger.info(
+                "Sleep checkpoint: %.0fs asleep, meeting_secs=%.1f, segment_index=%d",
+                sleep_duration, checkpoint.meeting_secs, checkpoint.segment_index,
+            )
+
+            if self._decision_popup_active:
+                # Popup already showing from previous wake — update it immediately
+                self._notify_js(
+                    f"window.onDecisionPopupUpdate({json.dumps(self._checkpoints_for_js())})"
+                )
+            else:
+                # First popup — delay briefly for display to settle after wake
+                self._decision_popup_active = True
+                sleep_mins = round(sleep_duration / 60)
+
+                def _show_popup():
+                    time.sleep(2)
+                    if not self._decision_popup_active:
+                        return  # user already dismissed
+                    data = self._checkpoints_for_js()
+                    data["sleepMinutes"] = sleep_mins
+                    self._notify_js(f"window.onShowDecisionPopup({json.dumps(data)})")
+
+                threading.Thread(target=_show_popup, daemon=True).start()
+        else:
+            # Short sleep — silent resume
+            logger.info("Short sleep (%.0fs), auto-resuming silently", sleep_duration)
+
+    def _resume_recording(self) -> None:
+        """Reinitialize audio pipeline and start a new recording segment.
+
+        Used after sleep/wake and by decision_continue_recording for sleep popups.
+        Raises on failure (caller handles fallback).
+        """
+        self.audio_capture.reinitialize()
+
+        mic_device = (
+            self._find_device(self._selected_mic_index, is_loopback=False)
+            if self._selected_mic_index is not None else None
+        )
+        loopback_device = (
+            self._find_device(self._selected_sys_index, is_loopback=True)
+            if self._selected_sys_index is not None else None
+        )
+
+        if not mic_device and not loopback_device:
+            raise RuntimeError("No audio devices found after wake")
+
+        # Start new recorder
+        recordings_dir = (
+            Path(self.settings.recordings_dir) if self.settings.recordings_dir
+            else self.data_dir / "recordings"
+        )
+        self._recorder = WavRecorder(recordings_dir)
+        self._recorder.start()
+
+        # Set up new mixer
+        self._mixer = AudioMixer(
+            on_mixed_chunk=self._on_mixed_audio,
+            has_mic=mic_device is not None,
+            has_loopback=loopback_device is not None,
+        )
+
+        # Start capture
+        self.audio_capture.start_capture(
+            mic_device=mic_device,
+            loopback_device=loopback_device,
+            on_audio_chunk=self._on_audio_chunk,
+            on_level_update=self._on_level_update,
+        )
+
+        self._segment_start_time = time.monotonic()
+
+        # Reset silence tracking
+        self._recording_silence_start = None
+        self._silence_checkpoint_added = False
+
+        # Reset health monitor
+        self._health_monitor.reset()
+
+        # Refresh Fibery recording lock
+        self._last_lock_refresh = time.monotonic()
+        if self._session and self._session.context.entity and self._session.context.fibery_client:
+            try:
+                self._session.context.fibery_client.set_recording_lock(
+                    self._session.context.entity, self._build_lock_value()
+                )
+            except Exception as e:
+                logger.warning("Failed to refresh lock on wake: %s", e)
+
+        logger.info("Recording resumed (%.1f s recorded so far)", self._accumulated_recording_secs)
 
     # --- Batch Processing ---
 
@@ -1454,7 +1711,7 @@ class FiberyTranscriptApp:
             if not transcript:
                 self._session.results.finish_transcript_send(success=False)
                 return {"success": False, "error": "No transcript available"}
-            client.update_transcript_only(entity, transcript)
+            client.update_transcript_only(entity, transcript, append=(self._transcript_mode == "append"))
             self._session.results.finish_transcript_send(success=True)
             self._notify_js("window.onTranscriptSentToFibery()")
             return {"success": True}
@@ -1527,12 +1784,15 @@ class FiberyTranscriptApp:
             return
 
         try:
-            fibery_client.update_transcript_only(entity, transcript_text)
+            if self._transcript_mode == "append":
+                fibery_client.update_transcript_only(entity, transcript_text, append=True)
+            else:
+                fibery_client.update_transcript_only(entity, transcript_text)
             if results:
                 results.finish_transcript_send(success=True)
             if not _stale():
                 self._notify_js("window.onTranscriptSentToFibery()")
-            logger.info("Transcript auto-sent to Fibery")
+            logger.info("Transcript auto-sent to Fibery (mode=%s)", self._transcript_mode)
         except Exception as exc:
             if results:
                 results.finish_transcript_send(success=False)
@@ -1805,7 +2065,7 @@ class FiberyTranscriptApp:
                     logger.info("Summary send already in-flight, returning generated summary")
                     return {"success": True, "sent_to_fibery": False, "summary": summary}
                 try:
-                    client.update_summary_only(entity, ai_summary=summary)
+                    client.update_summary_only(entity, ai_summary=summary, append=(self._transcript_mode == "append"))
                     if session_results:
                         session_results.finish_summary_send(success=True)
                     logger.info("Summary sent to Fibery")
@@ -1932,12 +2192,16 @@ class FiberyTranscriptApp:
 
         Used during shutdown to ensure WAV/OGG files are properly finalized
         (headers written, files closed) even though we won't transcribe.
-        Handles both active recording and sleeping (paused) states.
+        Handles active recording, sleeping, and decision popup states.
         """
         with self._stop_lock:
             if self.state != self.STATE_RECORDING:
                 return
             logger.info("Emergency stop: saving recording files before shutdown")
+
+            # Clear popup state
+            self._decision_popup_active = False
+            self._checkpoints = []
 
             if self._sleeping:
                 # Already paused — just merge saved segments

@@ -1141,14 +1141,6 @@ textarea::placeholder {
     line-height: 1.5;
 }
 
-.silence-countdown {
-    font-family: "SF Mono", "Consolas", "Menlo", monospace;
-    font-size: 48px;
-    font-weight: 700;
-    color: var(--warning);
-    margin-bottom: 20px;
-}
-
 .silence-actions {
     display: flex;
     gap: 12px;
@@ -1162,6 +1154,56 @@ textarea::placeholder {
 
 .silence-stop-btn:hover {
     opacity: 0.9;
+}
+
+.decision-recorded {
+    font-family: "SF Mono", "Consolas", "Menlo", monospace;
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 16px;
+}
+
+.decision-actions {
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.decision-checkpoint-btn {
+    background: var(--warning) !important;
+    color: #fff !important;
+    border: 1px solid var(--warning) !important;
+}
+
+.decision-checkpoint-btn:hover {
+    opacity: 0.9;
+}
+
+#decisionCheckpointGroup.has-dropdown {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+#decisionCheckpointGroup.has-dropdown .decision-select {
+    flex: 1;
+    margin-bottom: 0;
+}
+
+.decision-select {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.decision-select option {
+    background: var(--bg-input);
+    color: var(--text-primary);
 }
 
 /* === Toast Notifications === */

@@ -121,23 +121,44 @@ class ApiBridge:
             logger.error("Failed to stop recording: %s", e)
             return {"success": False, "error": str(e)}
 
-    def auto_stop_from_silence(self) -> dict:
-        """Called by JS when silence countdown reaches zero."""
+    def decision_continue_recording(self) -> dict:
+        """Called by JS when user clicks 'Continue Recording' on decision popup."""
         try:
-            self._app.auto_stop_from_silence()
+            self._app.decision_continue_recording()
             return {"success": True}
         except Exception as e:
-            logger.error("Auto-stop failed: %s", e)
+            logger.error("Decision continue failed: %s", e)
             return {"success": False, "error": str(e)}
 
-    def dismiss_silence_countdown(self) -> dict:
-        """Called by JS when user dismisses the silence countdown."""
+    def decision_end_now(self) -> dict:
+        """Called by JS when user clicks 'End Meeting Now' on decision popup."""
         try:
-            self._app.dismiss_silence_countdown()
+            self._app.decision_end_now()
             return {"success": True}
         except Exception as e:
-            logger.error("Dismiss silence countdown failed: %s", e)
+            logger.error("Decision end now failed: %s", e)
             return {"success": False, "error": str(e)}
+
+    def decision_end_at_checkpoint(self, index: int) -> dict:
+        """Called by JS when user picks a checkpoint to process up to."""
+        try:
+            self._app.decision_end_at_checkpoint(int(index))
+            return {"success": True}
+        except Exception as e:
+            logger.error("Decision end at checkpoint failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def set_transcript_mode(self, mode: str) -> dict:
+        """Set transcript mode to 'append' or 'replace' for this meeting."""
+        if mode not in ("append", "replace"):
+            return {"success": False, "error": "Invalid mode"}
+        self._app._transcript_mode = mode
+        logger.info("Transcript mode set to: %s", mode)
+        return {"success": True}
+
+    def get_transcript_mode(self) -> dict:
+        """Get current transcript mode."""
+        return {"success": True, "mode": self._app._transcript_mode}
 
     # --- File Upload (Browse & Transcribe) ---
 

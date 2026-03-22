@@ -33,8 +33,6 @@ let timerAccumulatedMs = 0;
 let fiberyValidated = false;      // true once the link has been validated
 let currentFiberyUrl = '';        // the validated URL
 let generatedSummary = '';        // cached summary text from last successful summarize
-let silenceCountdownInterval = null;
-let silenceCountdownRemaining = 0;
 let selectedUploadPath = null;    // path to browsed audio file
 let currentEntityDb = '';         // entity database name (for Files support check)
 
@@ -67,6 +65,7 @@ let panelCurrentUrl = '';   // Current URL in the Fibery panel
 
 // Collapsible elements
 const audioStorageCollapsible = document.getElementById('audioStorageCollapsible');
+const transcriptModeCollapsible = document.getElementById('transcriptModeCollapsible');
 const recordingMetaCollapsible = document.getElementById('recordingMetaCollapsible');
 const uploadCollapsible = document.getElementById('uploadCollapsible');
 const sendPanelCollapsible = document.getElementById('sendPanelCollapsible');
@@ -604,6 +603,7 @@ async function selectMeetingFromPanel() {
             // Show audio storage if recording is active
             if (isRecording) {
                 audioStorageCollapsible.classList.remove('collapsed');
+                transcriptModeCollapsible.classList.remove('collapsed');
             }
 
             // Check recording lock
@@ -699,6 +699,7 @@ async function createMeeting(meetingType) {
             // Show audio storage if recording is active
             if (isRecording) {
                 audioStorageCollapsible.classList.remove('collapsed');
+                transcriptModeCollapsible.classList.remove('collapsed');
             }
 
             // Check recording lock if entity created while recording
@@ -752,8 +753,9 @@ changeLinkBtn.addEventListener('click', async () => {
     }
     await window.pywebview.api.deselect_meeting();
     resetFiberyValidation();
-    // Re-collapse audio storage when meeting deselected
+    // Re-collapse toggles when meeting deselected
     audioStorageCollapsible.classList.add('collapsed');
+    transcriptModeCollapsible.classList.add('collapsed');
     // Show warning if deselected during recording
     if (isRecording) {
         fiberyMissingWarning.classList.remove('hidden');
@@ -789,6 +791,10 @@ async function resetSession() {
     const storageRadio = document.querySelector(`input[name="audioStorage"][value="${defaultStorage}"]`);
     if (storageRadio) storageRadio.checked = true;
     audioStorageCollapsible.classList.add('collapsed');
+    transcriptModeCollapsible.classList.add('collapsed');
+    // Reset transcript mode to append
+    const appendRadio = document.getElementById('modeAppend');
+    if (appendRadio) appendRadio.checked = true;
 
     // Reset recording meta and button
     recordingMetaCollapsible.classList.add('collapsed');
@@ -851,22 +857,32 @@ recordBtn.addEventListener('click', async () => {
     }
 });
 
-document.getElementById('silenceDismissBtn').addEventListener('click', () => {
-    if (silenceCountdownInterval) {
-        clearInterval(silenceCountdownInterval);
-        silenceCountdownInterval = null;
-    }
+// --- Decision Popup Button Handlers ---
+
+document.getElementById('decisionContinueBtn').addEventListener('click', () => {
     document.getElementById('silenceOverlay').classList.remove('open');
-    window.pywebview.api.dismiss_silence_countdown();
+    window.pywebview.api.decision_continue_recording();
 });
 
-document.getElementById('silenceStopNowBtn').addEventListener('click', () => {
-    if (silenceCountdownInterval) {
-        clearInterval(silenceCountdownInterval);
-        silenceCountdownInterval = null;
-    }
+document.getElementById('decisionEndNowBtn').addEventListener('click', () => {
     document.getElementById('silenceOverlay').classList.remove('open');
-    stopRecording();
+    window.pywebview.api.decision_end_now();
+});
+
+document.getElementById('decisionEndAtBtn').addEventListener('click', () => {
+    // If dropdown is visible, use its selected value; otherwise use first (only) checkpoint
+    const select = document.getElementById('checkpointSelect');
+    const index = select.style.display !== 'none' ? parseInt(select.value) : 0;
+    document.getElementById('silenceOverlay').classList.remove('open');
+    window.pywebview.api.decision_end_at_checkpoint(index);
+});
+
+
+// --- Transcript Mode Toggle ---
+document.querySelectorAll('input[name="transcriptMode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        window.pywebview.api.set_transcript_mode(e.target.value);
+    });
 });
 
 async function startRecording() {
@@ -890,9 +906,10 @@ async function startRecording() {
     // Show Step 3 (AI Summary)
     sendPanelCollapsible.classList.remove('collapsed');
 
-    // Show audio storage if meeting is linked
+    // Show audio storage and transcript mode if meeting is linked
     if (fiberyValidated) {
         audioStorageCollapsible.classList.remove('collapsed');
+        transcriptModeCollapsible.classList.remove('collapsed');
     }
 
     timerAccumulatedMs = 0;
@@ -918,6 +935,7 @@ async function startRecording() {
                     recordingMetaCollapsible.classList.add('collapsed');
                     uploadCollapsible.classList.remove('collapsed');
                     audioStorageCollapsible.classList.add('collapsed');
+                    transcriptModeCollapsible.classList.add('collapsed');
                     return;
                 }
             }
@@ -930,6 +948,7 @@ async function startRecording() {
             recordingMetaCollapsible.classList.add('collapsed');
             uploadCollapsible.classList.remove('collapsed');
             audioStorageCollapsible.classList.add('collapsed');
+            transcriptModeCollapsible.classList.add('collapsed');
             sendPanelCollapsible.classList.add('collapsed');
             showToast('Could not acquire recording lock: ' + err, 'error');
             return;
@@ -953,6 +972,7 @@ async function startRecording() {
         uploadCollapsible.classList.remove('collapsed');
         sendPanelCollapsible.classList.add('collapsed');
         audioStorageCollapsible.classList.add('collapsed');
+        transcriptModeCollapsible.classList.add('collapsed');
         // Release lock if we acquired one
         try { await callApi('release_recording_lock'); } catch (_) {}
     }
@@ -1072,46 +1092,100 @@ window.onBatchFailed = function(info) {
     window.pywebview.api.start_background_scanning();
 };
 
-// === Silence Auto-Stop ===
+// === Decision Popup (silence/sleep) ===
 
-window.onSilenceCountdownStart = function(seconds) {
-    if (silenceCountdownInterval) {
-        clearInterval(silenceCountdownInterval);
-        silenceCountdownInterval = null;
+function _formatMeetingTime(totalSeconds) {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = Math.floor(totalSeconds % 60);
+    return String(mins).padStart(2, '0') + ':' + String(secs).padStart(2, '0');
+}
+
+function _checkpointLabel(cp) {
+    const time = _formatMeetingTime(cp.meetingSecs);
+    return cp.type === 'sleep'
+        ? 'End at ' + time + ' (before sleep)'
+        : 'End at ' + time + ' (before silence)';
+}
+
+function _renderCheckpointControls(checkpoints) {
+    const endAtBtn = document.getElementById('decisionEndAtBtn');
+    const select = document.getElementById('checkpointSelect');
+    const group = document.getElementById('decisionCheckpointGroup');
+
+    if (checkpoints.length === 0) {
+        group.style.display = 'none';
+        group.classList.remove('has-dropdown');
+    } else if (checkpoints.length === 1) {
+        group.style.display = '';
+        group.classList.remove('has-dropdown');
+        select.style.display = 'none';
+        endAtBtn.style.display = '';
+        endAtBtn.textContent = _checkpointLabel(checkpoints[0]);
+    } else {
+        group.style.display = '';
+        group.classList.add('has-dropdown');
+        select.style.display = '';
+        endAtBtn.style.display = '';
+        select.innerHTML = '';
+        checkpoints.forEach((cp) => {
+            const opt = document.createElement('option');
+            opt.value = cp.index;
+            opt.textContent = _checkpointLabel(cp);
+            select.appendChild(opt);
+        });
+        // Auto-select latest checkpoint
+        select.value = checkpoints[checkpoints.length - 1].index;
+        endAtBtn.textContent = 'End';
     }
-    silenceCountdownRemaining = seconds;
-    const overlay = document.getElementById('silenceOverlay');
-    const countdownEl = document.getElementById('silenceCountdown');
+}
 
-    countdownEl.textContent = seconds;
+window.onShowDecisionPopup = function(data) {
+    // data = {checkpoints: [{type, meetingSecs, index}], currentRecordingSecs, sleepMinutes?}
+    const overlay = document.getElementById('silenceOverlay');
     overlay.classList.add('open');
 
-    silenceCountdownInterval = setInterval(() => {
-        silenceCountdownRemaining--;
-        countdownEl.textContent = silenceCountdownRemaining;
+    // Set description based on most recent checkpoint type
+    const descEl = document.getElementById('decisionDesc');
+    const checkpoints = data.checkpoints || [];
+    const lastCp = checkpoints.length > 0 ? checkpoints[checkpoints.length - 1] : null;
+    if (data.sleepMinutes) {
+        descEl.textContent = 'Your computer was asleep for ' + data.sleepMinutes + ' minute' + (data.sleepMinutes !== 1 ? 's' : '') + '.';
+    } else if (lastCp && lastCp.type === 'silence') {
+        descEl.textContent = 'No audio has been detected for a while.';
+    } else {
+        descEl.textContent = 'Recording was paused.';
+    }
 
-        if (silenceCountdownRemaining <= 0) {
-            clearInterval(silenceCountdownInterval);
-            silenceCountdownInterval = null;
-            overlay.classList.remove('open');
-            window.pywebview.api.auto_stop_from_silence();
-        }
-    }, 1000);
+    // Show milestone recording time
+    const milestoneTime = lastCp ? lastCp.meetingSecs : 0;
+    document.getElementById('decisionTimer').textContent = _formatMeetingTime(milestoneTime);
+
+    // Freeze the main timer at milestone time
+    stopTimer();
+    timerAccumulatedMs = milestoneTime * 1000;
+    recordTimer.textContent = formatTime(milestoneTime * 1000);
+
+    _renderCheckpointControls(checkpoints);
 };
 
-window.onSilenceCountdownCancel = function() {
-    if (silenceCountdownInterval) {
-        clearInterval(silenceCountdownInterval);
-        silenceCountdownInterval = null;
-    }
+window.onDecisionPopupUpdate = function(data) {
+    _renderCheckpointControls(data.checkpoints || []);
+};
+
+window.onDecisionPopupDismiss = function() {
     document.getElementById('silenceOverlay').classList.remove('open');
+};
+
+window.onDecisionTimerResume = function(accumulatedSeconds) {
+    timerAccumulatedMs = accumulatedSeconds * 1000;
+    startTimer();
 };
 
 window.onAutoStopComplete = function() {
     isRecording = false;
     stopTimer();
     setStatus('processing', 'Processing...');
-    showToast('Recording auto-stopped due to silence. Audio file saved.', 'info', 8000);
+    showToast('Processing recording...', 'info', 5000);
 };
 
 // === System Sleep / Wake ===
