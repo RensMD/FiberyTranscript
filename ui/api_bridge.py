@@ -243,6 +243,8 @@ class ApiBridge:
         "company_context": str,
         "audio_storage": str,
         "default_panel_page": str,
+        "noise_suppression": bool,
+        "agc": bool,
     }
 
     def save_settings(self, settings_dict: dict) -> dict:

@@ -89,6 +89,8 @@ class SettingsManager {
             this._toggleRecordingsDirRow();
             document.getElementById('defaultAudioStorage').value = settings.audio_storage || 'local';
             document.getElementById('defaultPanelPage').value = settings.default_panel_page || '';
+            document.getElementById('noiseSuppression').checked = settings.noise_suppression !== false;
+            document.getElementById('agcEnabled').checked = settings.agc !== false;
 
             // Gemini model settings
             document.getElementById('settingsGeminiModel').value = settings.gemini_model || '';
@@ -139,6 +141,8 @@ class SettingsManager {
             company_context: document.getElementById('settingsCompanyContext').value,
             audio_storage: document.getElementById('defaultAudioStorage').value,
             default_panel_page: document.getElementById('defaultPanelPage').value.trim(),
+            noise_suppression: document.getElementById('noiseSuppression').checked,
+            agc: document.getElementById('agcEnabled').checked,
         };
 
         try {

@@ -112,6 +112,8 @@ class WindowsAudioCapture(AudioCapture):
         on_audio_chunk: Callable[[bytes, bytes], None],
         on_level_update: Callable[[float, float], None],
         sample_rate: int = SAMPLE_RATE,
+        noise_suppressor=None,
+        agc=None,
     ) -> None:
         if self._capturing:
             logger.warning("Already capturing, call stop_capture first")
@@ -120,6 +122,8 @@ class WindowsAudioCapture(AudioCapture):
         self._capturing = True
         self._on_audio_chunk = on_audio_chunk
         self._on_level_update = on_level_update
+        self._noise_suppressor = noise_suppressor
+        self._agc = agc
 
         # Start microphone capture via sounddevice
         if mic_device:
@@ -134,8 +138,15 @@ class WindowsAudioCapture(AudioCapture):
         def mic_callback(indata: np.ndarray, frames: int, time_info, status):
             if status:
                 logger.debug("Mic stream status: %s", status)
-            pcm = (indata[:, 0] * 32767).astype(np.int16).tobytes()
-            level = calculate_rms(indata[:, 0])
+            samples = (indata[:, 0] * 32767).astype(np.int16)
+            # Noise suppression for level monitoring only (voice-aware silence detection)
+            # Raw audio goes to recording to preserve quality
+            if self._noise_suppressor:
+                cleaned = self._noise_suppressor.process(samples)
+                level = calculate_rms(cleaned.astype(np.float32) / 32767.0)
+            else:
+                level = calculate_rms(indata[:, 0])
+            pcm = samples.tobytes()
             self._on_level_update(level, -1)  # -1 means "no update for this source"
             self._on_audio_chunk(pcm, b"")
 

@@ -350,11 +350,27 @@ class FiberyTranscriptApp:
         self._silence_counter_mic = 0
         self._silence_counter_sys = 0
 
+        # Create audio processors for accurate level preview
+        noise_suppressor = None
+        agc = None
+        if self.settings.noise_suppression:
+            from audio.noise_suppressor import NoiseSuppressor
+            noise_suppressor = NoiseSuppressor(enabled=True)
+            if not noise_suppressor.available:
+                noise_suppressor = None
+        if self.settings.agc:
+            from audio.agc import AutomaticGainControl
+            agc = AutomaticGainControl(enabled=True)
+        self._noise_suppressor = noise_suppressor
+        self._agc = agc
+
         self.audio_capture.start_capture(
             mic_device=mic_device,
             loopback_device=loopback_device,
             on_audio_chunk=lambda mic_pcm, sys_pcm: None,  # Discard audio data
             on_level_update=self._on_level_update,
+            noise_suppressor=noise_suppressor,
+            agc=agc,
         )
         logger.info("Level monitoring started (mic=%s, loopback=%s)",
                      mic_device and mic_device.name, loopback_device and loopback_device.name)
@@ -536,12 +552,28 @@ class FiberyTranscriptApp:
             has_loopback=loopback_device is not None,
         )
 
+        # Create audio processors for mic channel
+        noise_suppressor = None
+        agc = None
+        if self.settings.noise_suppression:
+            from audio.noise_suppressor import NoiseSuppressor
+            noise_suppressor = NoiseSuppressor(enabled=True)
+            if not noise_suppressor.available:
+                noise_suppressor = None
+        if self.settings.agc:
+            from audio.agc import AutomaticGainControl
+            agc = AutomaticGainControl(enabled=True)
+        self._noise_suppressor = noise_suppressor
+        self._agc = agc
+
         # Start audio capture
         self.audio_capture.start_capture(
             mic_device=mic_device,
             loopback_device=loopback_device,
             on_audio_chunk=self._on_audio_chunk,
             on_level_update=self._on_level_update,
+            noise_suppressor=noise_suppressor,
+            agc=agc,
         )
 
         # Create session — captures entity snapshot frozen at recording start
@@ -597,12 +629,16 @@ class FiberyTranscriptApp:
         )
 
         # Start new capture -- on failure, try to restart with old devices
+        ns = getattr(self, '_noise_suppressor', None)
+        agc = getattr(self, '_agc', None)
         try:
             self.audio_capture.start_capture(
                 mic_device=mic_device,
                 loopback_device=loopback_device,
                 on_audio_chunk=self._on_audio_chunk,
                 on_level_update=self._on_level_update,
+                noise_suppressor=ns,
+                agc=agc,
             )
         except Exception as e:
             logger.error("Failed to start new audio source: %s, attempting rollback", e)
@@ -620,6 +656,8 @@ class FiberyTranscriptApp:
                     loopback_device=old_loop,
                     on_audio_chunk=self._on_audio_chunk,
                     on_level_update=self._on_level_update,
+                    noise_suppressor=ns,
+                    agc=agc,
                 )
                 logger.info("Rolled back to previous audio sources")
             except Exception:
@@ -1406,12 +1444,14 @@ class FiberyTranscriptApp:
             has_loopback=loopback_device is not None,
         )
 
-        # Start capture
+        # Start capture (reuse existing processors)
         self.audio_capture.start_capture(
             mic_device=mic_device,
             loopback_device=loopback_device,
             on_audio_chunk=self._on_audio_chunk,
             on_level_update=self._on_level_update,
+            noise_suppressor=getattr(self, '_noise_suppressor', None),
+            agc=getattr(self, '_agc', None),
         )
 
         self._segment_start_time = time.monotonic()

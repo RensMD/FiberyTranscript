@@ -63,6 +63,8 @@ class LinuxAudioCapture(AudioCapture):
         on_audio_chunk: Callable[[bytes, bytes], None],
         on_level_update: Callable[[float, float], None],
         sample_rate: int = SAMPLE_RATE,
+        noise_suppressor=None,
+        agc=None,
     ) -> None:
         if self._capturing:
             return
@@ -70,8 +72,13 @@ class LinuxAudioCapture(AudioCapture):
 
         if mic_device:
             def mic_cb(indata, frames, time_info, status):
-                pcm = (indata[:, 0] * 32767).astype(np.int16).tobytes()
-                level = calculate_rms(indata[:, 0])
+                samples = (indata[:, 0] * 32767).astype(np.int16)
+                if noise_suppressor:
+                    cleaned = noise_suppressor.process(samples)
+                    level = calculate_rms(cleaned.astype(np.float32) / 32767.0)
+                else:
+                    level = calculate_rms(indata[:, 0])
+                pcm = samples.tobytes()
                 on_level_update(level, -1)
                 on_audio_chunk(pcm, b"")
 

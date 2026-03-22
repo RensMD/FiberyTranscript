@@ -1,7 +1,7 @@
 """Application constants and prompt templates."""
 
 APP_NAME = "Fibery Transcript"
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 
 _DEFAULT_FIBERY_INSTANCE_URL = "https://your-workspace.fibery.io"
 _DEFAULT_COMPANY_CONTEXT = """Add your internal company context here to improve name disambiguation.
@@ -88,6 +88,7 @@ Instructions:
 If uncertain about a speaker's identity, use a descriptive label like \
 "[Internal participant]" or "[External participant]".
 - Fix obvious transcription errors: broken sentences, misheard words, grammar issues.
+- Keep the transcript in its original language. Do NOT translate.
 - Preserve the original meaning do not add, remove, or change what was said.
 - Split the transcript into a few broad thematic sections with short bold headers only.
 - Keep the speaker label format as **Name:** on its own line, followed by their text.

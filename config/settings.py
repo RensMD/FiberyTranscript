@@ -17,6 +17,10 @@ class Settings:
     minimize_to_tray_on_close: bool = True
     theme: str = "dark"  # "light" or "dark"
 
+    # Audio processing
+    noise_suppression: bool = True
+    agc: bool = True
+
     # Recording
     save_recordings: bool = True
     recordings_dir: str = ""

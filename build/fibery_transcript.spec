@@ -28,6 +28,7 @@ hidden_imports = [
     'sounddevice',
     'soundfile',
     '_sounddevice_data',
+    'pyrnnoise',
     # Transcription
     'assemblyai',
     # AI

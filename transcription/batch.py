@@ -109,6 +109,15 @@ def transcribe_with_diarization(
 
     aai.settings.api_key = api_key
 
+    # Normalize audio levels before compression/upload
+    try:
+        from audio.normalizer import normalize_audio
+        if on_progress:
+            on_progress("Normalizing audio levels...")
+        normalize_audio(Path(audio_path))
+    except Exception:
+        logger.debug("Audio normalization skipped", exc_info=True)
+
     # Use pre-compressed file if available, otherwise compress now
     if compressed_path and Path(compressed_path).exists():
         upload_path = compressed_path
