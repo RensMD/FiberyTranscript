@@ -34,6 +34,11 @@ def main():
     settings_path = data_dir / "settings.json"
     settings = Settings.load(settings_path)
 
+    # Merge installer preferences (written by the Windows installer on install/upgrade)
+    if settings.merge_installer_prefs(data_dir):
+        logger.info("Merged installer preferences into settings")
+        settings.save(settings_path)
+
     # Create app
     app = FiberyTranscriptApp(settings, data_dir)
 

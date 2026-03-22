@@ -382,6 +382,23 @@ class FiberyTranscriptApp:
         )
         return report.to_dict()
 
+    def check_for_updates(self) -> None:
+        """Check GitHub for a newer release in the background.
+
+        If an update is found, push a notification to the JS frontend.
+        """
+        from config.constants import APP_VERSION
+        from utils.update_checker import check_for_update_async
+
+        def _on_result(result):
+            if result and not self._is_shutting_down:
+                self._notify_js(
+                    f"window.onUpdateAvailable && window.onUpdateAvailable("
+                    f"{json.dumps(result)})"
+                )
+
+        check_for_update_async(APP_VERSION, _on_result)
+
     def start_background_scanning(self) -> None:
         """Start periodic background device scanning."""
         if self._is_shutting_down:

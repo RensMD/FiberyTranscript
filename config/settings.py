@@ -57,3 +57,34 @@ class Settings:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(asdict(self), f, indent=2)
         os.replace(str(tmp), str(path))
+
+    def merge_installer_prefs(self, data_dir: Path) -> bool:
+        """Merge installer_prefs.json into settings and delete the file.
+
+        The Windows installer writes this file with user-configured values.
+        On first launch after install/upgrade, we merge them into settings
+        so the user's choices take effect without overwriting unrelated settings.
+
+        Returns True if prefs were merged.
+        """
+        prefs_path = data_dir / "installer_prefs.json"
+        if not prefs_path.exists():
+            return False
+
+        try:
+            with open(prefs_path, encoding="utf-8") as f:
+                prefs = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            prefs_path.unlink(missing_ok=True)
+            return False
+
+        known_fields = self.__dataclass_fields__
+        merged = False
+        for key, value in prefs.items():
+            if key in known_fields:
+                setattr(self, key, value)
+                merged = True
+
+        # Delete the prefs file so it's not re-applied
+        prefs_path.unlink(missing_ok=True)
+        return merged

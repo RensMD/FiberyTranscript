@@ -1431,3 +1431,34 @@ setInterval(async () => {
         }
     }
 }, 10000);
+
+// === Update Available Banner ===
+window.onUpdateAvailable = function(info) {
+    // info: {version, url, notes}
+    // Don't show if already dismissed this session
+    if (window._updateDismissed) return;
+
+    const existing = document.getElementById('updateBanner');
+    if (existing) return;
+
+    const banner = document.createElement('div');
+    banner.id = 'updateBanner';
+    banner.className = 'update-banner';
+    banner.innerHTML = `
+        <span>Version ${info.version} is available!</span>
+        ${info.url ? `<a href="#" class="update-link" id="updateDownloadLink">Download</a>` : ''}
+        <button class="update-dismiss" title="Dismiss">&times;</button>
+    `;
+    document.body.prepend(banner);
+
+    if (info.url) {
+        document.getElementById('updateDownloadLink').addEventListener('click', (e) => {
+            e.preventDefault();
+            window.pywebview.api.open_url(info.url);
+        });
+    }
+    banner.querySelector('.update-dismiss').addEventListener('click', () => {
+        banner.remove();
+        window._updateDismissed = true;
+    });
+};
