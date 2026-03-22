@@ -66,6 +66,36 @@ def build_pyinstaller():
     print("PyInstaller build complete!")
 
 
+def _get_app_version() -> str:
+    """Read APP_VERSION from config/constants.py."""
+    constants_path = PROJECT_ROOT / "config" / "constants.py"
+    with open(constants_path, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("APP_VERSION"):
+                # APP_VERSION = "1.3.0"
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return "0.0.0"
+
+
+def _bump_patch_version() -> str:
+    """Increment the patch version in config/constants.py and return the new version."""
+    constants_path = PROJECT_ROOT / "config" / "constants.py"
+    content = constants_path.read_text(encoding="utf-8")
+
+    old_version = _get_app_version()
+    parts = old_version.split(".")
+    parts[-1] = str(int(parts[-1]) + 1)
+    new_version = ".".join(parts)
+
+    content = content.replace(
+        f'APP_VERSION = "{old_version}"',
+        f'APP_VERSION = "{new_version}"',
+    )
+    constants_path.write_text(content, encoding="utf-8")
+    print(f"Version bumped: {old_version} -> {new_version}")
+    return new_version
+
+
 def post_build_windows():
     """Windows: build NSIS installer."""
     nsi_file = BUILD_DIR / "installer.nsi"
@@ -81,15 +111,16 @@ def post_build_windows():
         print("  Or manually run: makensis build/installer.nsi")
         return
 
-    print("\nBuilding NSIS installer...")
+    version = _get_app_version()
+    print(f"\nBuilding NSIS installer (v{version})...")
     result = subprocess.run(
-        [makensis, str(nsi_file)],
+        [makensis, f"-DVERSION={version}", str(nsi_file)],
         cwd=str(BUILD_DIR),
     )
     if result.returncode != 0:
         print("ERROR: NSIS build failed")
     else:
-        installer = DIST_DIR / "FiberyTranscript-Setup.exe"
+        installer = DIST_DIR / f"FiberyTranscript-{version}-Setup.exe"
         if installer.exists():
             size_mb = installer.stat().st_size / (1024 * 1024)
             print(f"Installer created: {installer} ({size_mb:.1f} MB)")
@@ -185,6 +216,9 @@ def post_build_linux():
 def main():
     if "--clean" in sys.argv:
         clean()
+
+    if "--no-bump" not in sys.argv:
+        _bump_patch_version()
 
     check_dependencies()
     build_pyinstaller()

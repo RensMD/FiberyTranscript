@@ -10,20 +10,25 @@
 !include "LogicLib.nsh"
 !include "WinMessages.nsh"
 
+; --- Version (can be overridden via makensis -DVERSION=x.y.z) ---
+!ifndef VERSION
+    !define VERSION "1.3.0"
+!endif
+
 ; --- General ---
 Name "Fibery Transcript"
-OutFile "..\dist\FiberyTranscript-Setup.exe"
+OutFile "..\dist\FiberyTranscript-${VERSION}-Setup.exe"
 InstallDir "$LOCALAPPDATA\FiberyTranscript"
 InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript" "InstallLocation"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 
 ; --- Version Info ---
-VIProductVersion "1.3.0.0"
+VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "Fibery Transcript"
-VIAddVersionKey "ProductVersion" "1.3.0"
+VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileDescription" "Fibery Transcript Installer"
-VIAddVersionKey "FileVersion" "1.3.0.0"
+VIAddVersionKey "FileVersion" "${VERSION}.0"
 VIAddVersionKey "LegalCopyright" "Copyright Fibery Transcript"
 
 ; --- Interface ---
@@ -96,7 +101,7 @@ Section "Fibery Transcript" SecMain
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript" "InstallLocation" "$INSTDIR"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript" "DisplayIcon" "$INSTDIR\FiberyTranscript.exe"
     WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript" "Publisher" "Fibery Transcript Team"
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript" "DisplayVersion" "1.3.0"
+    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript" "DisplayVersion" "${VERSION}"
 
     ; Calculate installed size
     ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2

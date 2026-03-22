@@ -1,7 +1,7 @@
 """Application constants and prompt templates."""
 
 APP_NAME = "Fibery Transcript"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 _DEFAULT_FIBERY_INSTANCE_URL = "https://your-workspace.fibery.io"
 _DEFAULT_COMPANY_CONTEXT = """Add your internal company context here to improve name disambiguation.
