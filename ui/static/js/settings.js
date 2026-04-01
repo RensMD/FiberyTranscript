@@ -11,6 +11,11 @@ class SettingsManager {
         this.recordingsDirRow = document.getElementById('recordingsDirRow');
         this.recordingsDirInput = document.getElementById('recordingsDir');
         this.browseBtn = document.getElementById('browseRecordingsBtn');
+        this.postProcessingCheckbox = document.getElementById('postProcessingEnabled');
+        this.postProcessingOptions = document.getElementById('postProcessingOptions');
+        this.postProcessingInputs = this.postProcessingOptions
+            ? Array.from(this.postProcessingOptions.querySelectorAll('input[type="checkbox"]'))
+            : [];
 
         this.openBtn.addEventListener('click', () => this.open());
         this.closeBtn.addEventListener('click', () => this.close());
@@ -32,6 +37,9 @@ class SettingsManager {
         // Toggle recordings folder visibility
         this.saveRecordingsCheckbox.addEventListener('change', () => {
             this._toggleRecordingsDirRow();
+        });
+        this.postProcessingCheckbox.addEventListener('change', () => {
+            this._togglePostProcessingControls();
         });
 
         // Browse folder button
@@ -59,6 +67,16 @@ class SettingsManager {
             this.recordingsDirRow.classList.remove('hidden');
         } else {
             this.recordingsDirRow.classList.add('hidden');
+        }
+    }
+
+    _togglePostProcessingControls() {
+        const enabled = this.postProcessingCheckbox.checked;
+        this.postProcessingInputs.forEach((input) => {
+            input.disabled = !enabled;
+        });
+        if (this.postProcessingOptions) {
+            this.postProcessingOptions.classList.toggle('is-disabled', !enabled);
         }
     }
 
@@ -91,6 +109,13 @@ class SettingsManager {
             document.getElementById('defaultPanelPage').value = settings.default_panel_page || '';
             document.getElementById('noiseSuppression').checked = settings.noise_suppression !== false;
             document.getElementById('agcEnabled').checked = settings.agc !== false;
+            document.getElementById('audioTranscriptCleanupEnabled').checked = settings.audio_transcript_cleanup_enabled === true;
+            this.postProcessingCheckbox.checked = settings.post_processing === true;
+            document.getElementById('echoCancellationEnabled').checked = settings.echo_cancellation === true;
+            document.getElementById('postNoiseSuppression').checked = settings.post_noise_suppression === true;
+            document.getElementById('postAgcEnabled').checked = settings.post_agc === true;
+            document.getElementById('postNormalizeEnabled').checked = settings.post_normalize === true;
+            this._togglePostProcessingControls();
 
             // Gemini model settings
             document.getElementById('settingsGeminiModel').value = settings.gemini_model || '';
@@ -143,6 +168,12 @@ class SettingsManager {
             default_panel_page: document.getElementById('defaultPanelPage').value.trim(),
             noise_suppression: document.getElementById('noiseSuppression').checked,
             agc: document.getElementById('agcEnabled').checked,
+            audio_transcript_cleanup_enabled: document.getElementById('audioTranscriptCleanupEnabled').checked,
+            post_processing: this.postProcessingCheckbox.checked,
+            echo_cancellation: document.getElementById('echoCancellationEnabled').checked,
+            post_noise_suppression: document.getElementById('postNoiseSuppression').checked,
+            post_agc: document.getElementById('postAgcEnabled').checked,
+            post_normalize: document.getElementById('postNormalizeEnabled').checked,
         };
 
         try {

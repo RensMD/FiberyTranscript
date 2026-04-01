@@ -3,6 +3,7 @@
 import getpass
 import json
 import logging
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -11,6 +12,7 @@ from typing import Optional
 
 from audio.capture import AudioCapture, AudioDevice, create_audio_capture
 from audio.device_scanner import scan_all_devices
+from audio.health_monitor import SPEECH_THRESHOLD
 from audio.mixer import AudioMixer
 from audio.recorder import WavRecorder
 from config.constants import FIBERY_INSTANCE_URL
@@ -86,9 +88,11 @@ class FiberyTranscriptApp:
         self._fibery_client = None
         # Entity context for word boost / summary enrichment
         self._entity_context = None
+        self._linked_transcript_text: str = ""
 
         # Level update throttling — limit evaluate_js calls to ~5/sec
-        self._last_mic_level: float = 0.0
+        self._last_mic_level: float = 0.0        # noise-suppressed (for speech detection)
+        self._last_raw_mic_level: float = 0.0    # raw pre-noise-suppression (for silence/health)
         self._last_sys_level: float = 0.0
         self._last_level_push: float = 0.0
         self._LEVEL_PUSH_INTERVAL: float = 0.2  # seconds between JS level pushes
@@ -131,9 +135,12 @@ class FiberyTranscriptApp:
         self._accumulated_recording_secs: float = 0.0  # total recording time pre-sleep
         self._segment_start_time: float = 0.0        # monotonic time when segment started
         self._sleep_wall_time: float = 0.0           # wall-clock time when sleep began
+        self._recording_channels: Optional[int] = None  # fixed output format for current recording
 
-        # Append/replace mode for Fibery transcript/summary writes (per-meeting, not persisted)
+        # Append/replace mode for Fibery transcript writes (per-meeting, not persisted)
         self._transcript_mode: str = "append"  # "append" or "replace"
+        # Append/replace mode for Fibery summary writes (per-meeting, not persisted)
+        self._summary_mode: str = "append"  # "append" or "replace"
 
         # Lock refresh tracking (refresh every 10 min during long recordings)
         self._last_lock_refresh: float = 0.0
@@ -168,6 +175,114 @@ class FiberyTranscriptApp:
         self.settings.save(settings_path)
         logger.info("Settings saved to %s", settings_path)
 
+    def _get_recordings_dir(self) -> Path:
+        """Return the active local recordings directory."""
+        if self.settings.recordings_dir:
+            return Path(self.settings.recordings_dir).expanduser()
+        return self.data_dir / "recordings"
+
+    def _path_is_within(self, path: Path, directory: Path) -> bool:
+        """Return True when *path* is inside *directory*."""
+        try:
+            path.resolve(strict=False).relative_to(directory.resolve(strict=False))
+            return True
+        except ValueError:
+            return False
+
+    def _build_unique_recordings_path(self, file_path: Path, recordings_dir: Path) -> Path:
+        """Return a non-conflicting destination path inside recordings_dir."""
+        candidate = recordings_dir / file_path.name
+        if not candidate.exists():
+            return candidate
+
+        counter = 2
+        while True:
+            candidate = recordings_dir / f"{file_path.stem}_{counter}{file_path.suffix}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
+    def _copy_uploaded_file_to_recordings(self, file_path: Path) -> Path:
+        """Copy an imported file into the recordings folder when it lives elsewhere."""
+        import shutil
+
+        if not self.settings.save_recordings:
+            return file_path
+
+        recordings_dir = self._get_recordings_dir()
+        if self._path_is_within(file_path, recordings_dir):
+            return file_path
+
+        try:
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            destination = self._build_unique_recordings_path(file_path, recordings_dir)
+            shutil.copy2(str(file_path), str(destination))
+            logger.info("Copied uploaded audio to recordings folder: %s", destination.name)
+            return destination
+        except OSError as e:
+            logger.warning("Could not copy uploaded audio to recordings dir: %s", e)
+            return file_path
+
+    def _build_post_process_settings(self) -> Optional[dict]:
+        """Return post-processing stage toggles, or None when disabled."""
+        if not self.settings.post_processing:
+            return None
+
+        return {
+            "echo_cancel": self.settings.echo_cancellation,
+            "noise_suppress": self.settings.post_noise_suppression,
+            "agc": self.settings.post_agc,
+            "normalize": self.settings.post_normalize,
+        }
+
+    def _build_level_monitor_noise_suppressor(self):
+        """Create the optional mic suppressor used for speech detection."""
+        if not self.settings.noise_suppression:
+            return None
+
+        from audio.noise_suppressor import NoiseSuppressor
+
+        noise_suppressor = NoiseSuppressor(enabled=True)
+        if not noise_suppressor.available:
+            return None
+        return noise_suppressor
+
+    def _build_ogg_processors(self) -> tuple[object | None, object | None]:
+        """Create fresh processors for the parallel OGG writer."""
+        ogg_noise_suppressor = None
+        ogg_agc = None
+
+        if self.settings.noise_suppression:
+            from audio.noise_suppressor import NoiseSuppressor
+
+            ogg_noise_suppressor = NoiseSuppressor(enabled=True)
+            if not ogg_noise_suppressor.available:
+                ogg_noise_suppressor = None
+
+        if self.settings.agc:
+            from audio.agc import AutomaticGainControl
+
+            ogg_agc = AutomaticGainControl(enabled=True)
+
+        return ogg_noise_suppressor, ogg_agc
+
+    def _start_recorder(self, channels: Optional[int] = None) -> Path:
+        """Start a recorder using the session's fixed channel layout."""
+        resolved_channels = channels
+        if resolved_channels is None:
+            resolved_channels = self._recording_channels
+        if resolved_channels is None:
+            resolved_channels = self._mixer.channels if self._mixer else 1
+
+        ogg_noise_suppressor, ogg_agc = self._build_ogg_processors()
+        self._recorder = WavRecorder(
+            self._get_recordings_dir(),
+            noise_suppressor=ogg_noise_suppressor,
+            agc=ogg_agc,
+            channels=resolved_channels,
+        )
+        return self._recorder.start()
+
     def reset_session(self) -> None:
         """Clear all session data and return to idle state.
 
@@ -179,16 +294,19 @@ class FiberyTranscriptApp:
         self.release_recording_lock()
         self._validated_entity = None
         self._entity_context = None
+        self._linked_transcript_text = ""
         self._session = None
         self._recording_segments = []
         self._segment_ogg_paths = []
         self._sleeping = False
         self._accumulated_recording_secs = 0.0
+        self._recording_channels = None
         self._checkpoints = []
         self._decision_popup_active = False
         self._milestone_recording_secs = 0.0
         self._silence_checkpoint_added = False
         self._transcript_mode = "append"
+        self._summary_mode = "append"
         self.state = self.STATE_IDLE
         logger.info("Session reset (token=%d)", self._session_token)
 
@@ -281,12 +399,28 @@ class FiberyTranscriptApp:
             logger.warning("Failed to acquire recording lock: %s", e)
             return False
 
-    def release_recording_lock(self) -> None:
-        if not self._validated_entity or not self._fibery_client:
+    def _release_recording_lock_for(self, entity, client=None) -> None:
+        """Best-effort lock release for a specific entity."""
+        if not entity:
             return
+
+        created_client = None
         try:
             import socket
-            current = self._fibery_client.get_recording_lock(self._validated_entity)
+
+            if client is None:
+                from integrations.fibery_client import FiberyClient
+
+                api_token = get_key("fibery_api_token")
+                if not api_token:
+                    return
+                created_client = FiberyClient(
+                    api_token=api_token,
+                    instance_url=FIBERY_INSTANCE_URL,
+                )
+                client = created_client
+
+            current = client.get_recording_lock(entity)
             if current:
                 name, host, _ = self._parse_lock(current)
                 my_name = self._get_display_name()
@@ -294,14 +428,36 @@ class FiberyTranscriptApp:
                 if name != my_name or (host and host != my_host):
                     logger.info("Lock belongs to %s@%s, not releasing", name, host)
                     return
-            self._fibery_client.clear_recording_lock(self._validated_entity)
+
+            client.clear_recording_lock(entity)
         except Exception as e:
             logger.warning("Failed to release recording lock: %s", e)
+        finally:
+            if created_client:
+                try:
+                    created_client.close()
+                except Exception:
+                    logger.debug("Error closing temporary Fibery client", exc_info=True)
+
+    def release_recording_lock(self) -> None:
+        if not self._validated_entity or not self._fibery_client:
+            return
+        self._release_recording_lock_for(self._validated_entity, self._fibery_client)
+
+    def _release_recording_lock_async(self, entity) -> None:
+        """Release a recording lock off the UI-critical path."""
+        if not entity:
+            return
+
+        def _worker() -> None:
+            self._release_recording_lock_for(entity)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def deselect_meeting(self) -> None:
         """Clear the currently linked Fibery entity without closing the panel."""
         if self.state == self.STATE_PROCESSING:
-            logger.info("Deselect blocked — processing is active")
+            logger.info("Deselect blocked - processing is active")
             return
         if self._validated_entity:
             try:
@@ -310,6 +466,7 @@ class FiberyTranscriptApp:
                 logger.debug("Failed to release lock on deselect", exc_info=True)
         self._validated_entity = None
         self._entity_context = None
+        self._linked_transcript_text = ""
         logger.info("Meeting deselected")
 
     def _fetch_entity_context(self):
@@ -327,22 +484,72 @@ class FiberyTranscriptApp:
             logger.warning("Failed to fetch entity context: %s", e)
             return None
 
+    def _get_local_transcript_text(self, session_results=None) -> str:
+        """Return the current local transcript text, if any."""
+        if not session_results:
+            return ""
+
+        cleaned_transcript = session_results.get_cleaned_transcript()
+        if cleaned_transcript and cleaned_transcript.strip():
+            return cleaned_transcript
+
+        batch = session_results.get_batch_result()
+        if batch and batch.get("utterances"):
+            transcript_text = format_diarized_transcript(batch["utterances"])
+            if transcript_text.strip():
+                return transcript_text
+
+        return ""
+
+    def _get_summary_source_text(self, session: Optional[RecordingSession] = None) -> str:
+        """Return the preferred transcript source for summarization."""
+        active_session = session if session is not None else self._session
+        session_results = active_session.results if active_session else None
+
+        local_transcript = self._get_local_transcript_text(session_results)
+        if local_transcript:
+            return local_transcript
+
+        if self._linked_transcript_text and self._linked_transcript_text.strip():
+            return self._linked_transcript_text
+
+        return ""
+
     # --- Level Monitoring ---
+
+    def _allow_idle_loopback_capture(self) -> bool:
+        """Whether idle monitoring/scanning may touch the loopback device."""
+        return sys.platform != "win32"
 
     def start_monitor(self, mic_index: Optional[int], loopback_index: Optional[int]) -> None:
         """Start audio level monitoring without recording."""
         if self.state in (self.STATE_RECORDING, self.STATE_PROCESSING):
             return
 
+        requested_selection = (mic_index, loopback_index)
+        current_selection = (self._selected_mic_index, self._selected_sys_index)
+
         # Stop any existing monitoring
         if self.audio_capture.is_capturing():
+            if requested_selection == current_selection:
+                logger.warning(
+                    "Level monitoring restart requested for same devices (mic=%s, loopback=%s)",
+                    mic_index,
+                    loopback_index,
+                )
+            else:
+                logger.info(
+                    "Level monitoring switching devices (old_mic=%s, old_loopback=%s, "
+                    "new_mic=%s, new_loopback=%s)",
+                    self._selected_mic_index,
+                    self._selected_sys_index,
+                    mic_index,
+                    loopback_index,
+                )
             self.audio_capture.stop_capture()
 
         mic_device = self._find_device(mic_index, is_loopback=False) if mic_index is not None else None
         loopback_device = self._find_device(loopback_index, is_loopback=True) if loopback_index is not None else None
-
-        if not mic_device and not loopback_device:
-            return
 
         # Track selected devices for background scanner
         self._selected_mic_index = mic_index
@@ -350,27 +557,26 @@ class FiberyTranscriptApp:
         self._silence_counter_mic = 0
         self._silence_counter_sys = 0
 
-        # Create audio processors for accurate level preview
-        noise_suppressor = None
-        agc = None
-        if self.settings.noise_suppression:
-            from audio.noise_suppressor import NoiseSuppressor
-            noise_suppressor = NoiseSuppressor(enabled=True)
-            if not noise_suppressor.available:
-                noise_suppressor = None
-        if self.settings.agc:
-            from audio.agc import AutomaticGainControl
-            agc = AutomaticGainControl(enabled=True)
-        self._noise_suppressor = noise_suppressor
-        self._agc = agc
+        if loopback_device and not self._allow_idle_loopback_capture():
+            logger.info(
+                "Idle monitoring on Windows skips loopback capture for %s to avoid playback glitches",
+                loopback_device.name,
+            )
+            loopback_device = None
+            self._last_sys_level = 0.0
+
+        if not mic_device and not loopback_device:
+            return
+
+        # Skip noise suppression during idle monitoring to save CPU
+        self._noise_suppressor = None
 
         self.audio_capture.start_capture(
             mic_device=mic_device,
             loopback_device=loopback_device,
             on_audio_chunk=lambda mic_pcm, sys_pcm: None,  # Discard audio data
             on_level_update=self._on_level_update,
-            noise_suppressor=noise_suppressor,
-            agc=agc,
+            noise_suppressor=None,
         )
         logger.info("Level monitoring started (mic=%s, loopback=%s)",
                      mic_device and mic_device.name, loopback_device and loopback_device.name)
@@ -437,10 +643,17 @@ class FiberyTranscriptApp:
             self._scan_thread = None
         logger.info("Background device scanning stopped")
 
+    def _resume_background_scanning(self) -> None:
+        """Ensure idle device scanning is running after recording/processing ends."""
+        if self.state in (self.STATE_RECORDING, self.STATE_PROCESSING):
+            return
+        self.start_background_scanning()
+
     _SILENCE_THRESHOLD = 0.005   # RMS below this = "silent"
     _SILENCE_TICKS_NEEDED = 2    # consecutive silent ticks before scanning
 
-    _RECORDING_SILENCE_DURATION = 60.0    # seconds of silence before decision popup
+    _RECORDING_SILENCE_DURATION = 60.0    # seconds of total silence before decision popup
+    _NO_SPEECH_SILENCE_DURATION = 300.0  # 5 min: mic noise but no speech before popup
     _MIN_SLEEP_FOR_CHECKPOINT = 60        # minimum sleep seconds to create checkpoint/popup
 
     def _background_scan_loop(self) -> None:
@@ -457,7 +670,7 @@ class FiberyTranscriptApp:
 
             # Check which selected sources are silent
             mic_silent = (self._selected_mic_index is not None
-                          and self._last_mic_level < self._SILENCE_THRESHOLD)
+                          and self._last_raw_mic_level < self._SILENCE_THRESHOLD)
             sys_silent = (self._selected_sys_index is not None
                           and self._last_sys_level < self._SILENCE_THRESHOLD)
 
@@ -475,6 +688,10 @@ class FiberyTranscriptApp:
             scan_mics = self._silence_counter_mic >= self._SILENCE_TICKS_NEEDED
             scan_loopbacks = self._silence_counter_sys >= self._SILENCE_TICKS_NEEDED
 
+            if scan_loopbacks and not self._allow_idle_loopback_capture():
+                logger.debug("Skipping idle loopback background scan on Windows")
+                scan_loopbacks = False
+
             if not scan_mics and not scan_loopbacks:
                 # Everything has audio - clear any warnings
                 self._notify_js("window.onDeviceScanResults({\"microphones\":[],\"loopbacks\":[]})")
@@ -489,9 +706,18 @@ class FiberyTranscriptApp:
                 if self._scan_stop_event.is_set() or self.state == self.STATE_RECORDING:
                     continue
 
+                # Skip devices currently being captured — opening a second
+                # WASAPI stream on the same loopback device causes audio glitches.
+                active_indices = set()
+                if self._selected_mic_index is not None:
+                    active_indices.add(self._selected_mic_index)
+                if self._selected_sys_index is not None:
+                    active_indices.add(self._selected_sys_index)
+
                 report = scan_all_devices(
                     mic_devices=mic_devices,
                     loopback_devices=loopback_devices,
+                    skip_indices=active_indices,
                     duration=0.3,
                     cancel=self._scan_stop_event,
                 )
@@ -510,9 +736,6 @@ class FiberyTranscriptApp:
         """Start audio capture and WAV recording."""
         if self.state != self.STATE_IDLE:
             raise RuntimeError("Cannot start recording from state: " + self.state)
-
-        # Pause background scanning during recording
-        self.stop_background_scanning()
 
         # Stop monitoring if active
         if self.audio_capture.is_capturing():
@@ -540,41 +763,36 @@ class FiberyTranscriptApp:
         if loopback_index is not None and loopback_device is None:
             raise RuntimeError("Selected speaker output is no longer available. Please refresh your audio devices.")
 
-        # Start WAV recorder
-        recordings_dir = Path(self.settings.recordings_dir) if self.settings.recordings_dir else self.data_dir / "recordings"
-        self._recorder = WavRecorder(recordings_dir)
-        self._recorder.start()
+        self._recording_channels = 2 if (mic_device is not None and loopback_device is not None) else 1
+        self.stop_background_scanning()
 
-        # Set up audio mixer → feeds recorder
-        self._mixer = AudioMixer(
-            on_mixed_chunk=self._on_mixed_audio,
-            has_mic=mic_device is not None,
-            has_loopback=loopback_device is not None,
-        )
+        try:
+            # Create noise suppressor for level monitoring (voice-aware silence detection)
+            noise_suppressor = self._build_level_monitor_noise_suppressor()
+            self._noise_suppressor = noise_suppressor
 
-        # Create audio processors for mic channel
-        noise_suppressor = None
-        agc = None
-        if self.settings.noise_suppression:
-            from audio.noise_suppressor import NoiseSuppressor
-            noise_suppressor = NoiseSuppressor(enabled=True)
-            if not noise_suppressor.available:
-                noise_suppressor = None
-        if self.settings.agc:
-            from audio.agc import AutomaticGainControl
-            agc = AutomaticGainControl(enabled=True)
-        self._noise_suppressor = noise_suppressor
-        self._agc = agc
+            # Set up audio mixer → feeds recorder
+            self._mixer = AudioMixer(
+                on_mixed_chunk=self._on_mixed_audio,
+                has_mic=mic_device is not None,
+                has_loopback=loopback_device is not None,
+                output_channels=self._recording_channels,
+            )
 
-        # Start audio capture
-        self.audio_capture.start_capture(
-            mic_device=mic_device,
-            loopback_device=loopback_device,
-            on_audio_chunk=self._on_audio_chunk,
-            on_level_update=self._on_level_update,
-            noise_suppressor=noise_suppressor,
-            agc=agc,
-        )
+            # Start WAV recorder (raw WAV + processed OGG in parallel)
+            self._start_recorder(self._recording_channels)
+
+            # Start audio capture
+            self.audio_capture.start_capture(
+                mic_device=mic_device,
+                loopback_device=loopback_device,
+                on_audio_chunk=self._on_audio_chunk,
+                on_level_update=self._on_level_update,
+                noise_suppressor=noise_suppressor,
+            )
+        except Exception:
+            self._resume_background_scanning()
+            raise
 
         # Create session — captures entity snapshot frozen at recording start
         self._session = RecordingSession(SessionContext(
@@ -613,6 +831,9 @@ class FiberyTranscriptApp:
 
         # Save old mixer for rollback
         old_mixer = self._mixer
+        output_channels = self._recording_channels
+        if output_channels is None:
+            output_channels = old_mixer.channels if old_mixer else (2 if (mic_device and loopback_device) else 1)
 
         # Stop current capture
         self.audio_capture.stop_capture()
@@ -626,11 +847,11 @@ class FiberyTranscriptApp:
             on_mixed_chunk=self._on_mixed_audio,
             has_mic=mic_device is not None,
             has_loopback=loopback_device is not None,
+            output_channels=output_channels,
         )
 
         # Start new capture -- on failure, try to restart with old devices
         ns = getattr(self, '_noise_suppressor', None)
-        agc = getattr(self, '_agc', None)
         try:
             self.audio_capture.start_capture(
                 mic_device=mic_device,
@@ -638,7 +859,6 @@ class FiberyTranscriptApp:
                 on_audio_chunk=self._on_audio_chunk,
                 on_level_update=self._on_level_update,
                 noise_suppressor=ns,
-                agc=agc,
             )
         except Exception as e:
             logger.error("Failed to start new audio source: %s, attempting rollback", e)
@@ -650,6 +870,7 @@ class FiberyTranscriptApp:
                     on_mixed_chunk=self._on_mixed_audio,
                     has_mic=old_mic is not None,
                     has_loopback=old_loop is not None,
+                    output_channels=output_channels,
                 )
                 self.audio_capture.start_capture(
                     mic_device=old_mic,
@@ -657,7 +878,6 @@ class FiberyTranscriptApp:
                     on_audio_chunk=self._on_audio_chunk,
                     on_level_update=self._on_level_update,
                     noise_suppressor=ns,
-                    agc=agc,
                 )
                 logger.info("Rolled back to previous audio sources")
             except Exception:
@@ -681,9 +901,7 @@ class FiberyTranscriptApp:
         # Clear decision popup state if active
         self._decision_popup_active = False
         self._checkpoints = []
-
-        # Release recording lock
-        self.release_recording_lock()
+        entity_for_lock = self._validated_entity if self._fibery_client else None
 
         if self._sleeping:
             # User stopped while asleep (via tray/UI) — no active capture to stop
@@ -706,6 +924,8 @@ class FiberyTranscriptApp:
                 if ogg:
                     self._segment_ogg_paths.append(ogg)
                 self._recorder = None
+
+        self._release_recording_lock_async(entity_for_lock)
 
         # Merge segments if we have prior sleep-saved segments
         wav_path, compressed_path = self._finalize_segments()
@@ -745,6 +965,7 @@ class FiberyTranscriptApp:
         else:
             # No audio recorded, just mark as completed
             self.state = self.STATE_COMPLETED
+            self._resume_background_scanning()
             self._notify_js("window.onProcessingComplete()")
 
     def _finalize_segments(self) -> tuple:
@@ -799,6 +1020,7 @@ class FiberyTranscriptApp:
 
         if not wav_path:
             self.state = self.STATE_COMPLETED
+            self._resume_background_scanning()
             self._notify_js("window.onProcessingComplete()")
             return
 
@@ -827,6 +1049,7 @@ class FiberyTranscriptApp:
             self._batch_thread.start()
         else:
             self.state = self.STATE_COMPLETED
+            self._resume_background_scanning()
             self._notify_js("window.onProcessingComplete()")
 
     # --- File Upload (Browse & Transcribe) ---
@@ -908,9 +1131,9 @@ class FiberyTranscriptApp:
 
         path = Path(file_path)
         self._validate_audio_file(path)  # raises on failure
+        path = self._copy_uploaded_file_to_recordings(path)
 
-        # Stop monitoring/scanning
-        self.stop_background_scanning()
+        # Stop monitoring
         if self.audio_capture.is_capturing():
             self.audio_capture.stop_capture()
 
@@ -974,10 +1197,12 @@ class FiberyTranscriptApp:
         if self._recorder and self._recorder.is_recording:
             self._recorder.write_chunk(mixed_pcm)
 
-    def _on_level_update(self, mic_level: float, sys_level: float) -> None:
+    def _on_level_update(self, mic_level: float, sys_level: float, raw_mic_level: float = -1) -> None:
         """Called by audio capture with RMS levels."""
         if mic_level >= 0:
             self._last_mic_level = mic_level
+        if raw_mic_level >= 0:
+            self._last_raw_mic_level = raw_mic_level
         if sys_level >= 0:
             self._last_sys_level = sys_level
 
@@ -987,12 +1212,14 @@ class FiberyTranscriptApp:
         if now - self._last_level_push >= self._LEVEL_PUSH_INTERVAL:
             self._last_level_push = now
             self._notify_js(
-                f"window.updateAudioLevels({self._last_mic_level:.4f}, {self._last_sys_level:.4f})"
+                f"window.updateAudioLevels({self._last_raw_mic_level:.4f}, {self._last_sys_level:.4f})"
             )
 
-        # Audio health monitoring during recording
+        # Audio health monitoring during recording — feed raw mic RMS so
+        # noise suppression doesn't cause false "mic dead" reports
         if self.state == self.STATE_RECORDING:
-            health = self._health_monitor.update(mic_level, sys_level)
+            health_mic = raw_mic_level if raw_mic_level >= 0 else mic_level
+            health = self._health_monitor.update(health_mic, sys_level)
             if health:
                 self._notify_js(
                     f"window.updateAudioHealth && window.updateAudioHealth({json.dumps(health.to_dict())})"
@@ -1070,15 +1297,28 @@ class FiberyTranscriptApp:
                         logger.debug("Lock refresh failed", exc_info=True)
                 threading.Thread(target=_refresh_lock, daemon=True).start()
 
-        both_silent = (self._last_mic_level < self._SILENCE_THRESHOLD
-                       and self._last_sys_level < self._SILENCE_THRESHOLD)
+        # Tiered silence detection:
+        #   sys audio active OR mic speech → reset (meeting active)
+        #   mic noise but no speech/sys   → 5 min trigger
+        #   both truly silent             → 60s trigger
+        sys_has_audio = self._last_sys_level >= self._SILENCE_THRESHOLD
+        mic_has_speech = self._last_mic_level >= SPEECH_THRESHOLD  # noise-suppressed
+        mic_has_audio = self._last_raw_mic_level >= self._SILENCE_THRESHOLD
 
-        if both_silent:
+        if sys_has_audio or mic_has_speech:
+            # Active meeting or speech — full reset
+            self._recording_silence_start = None
+            self._silence_checkpoint_added = False
+        else:
+            # Determine required silence duration based on mic state
+            required = (self._NO_SPEECH_SILENCE_DURATION if mic_has_audio
+                        else self._RECORDING_SILENCE_DURATION)
+
             if self._recording_silence_start is None:
                 self._recording_silence_start = now
             elapsed = now - self._recording_silence_start
 
-            if elapsed >= self._RECORDING_SILENCE_DURATION:
+            if elapsed >= required:
                 if self._decision_popup_active:
                     # Popup already showing — add a silence checkpoint if not already done
                     if not self._silence_checkpoint_added:
@@ -1091,15 +1331,12 @@ class FiberyTranscriptApp:
                     # Show decision popup directly (no countdown)
                     self._decision_popup_active = True
                     self._silence_checkpoint_added = True
-                    logger.info("Silence detected for %.0fs, showing decision popup", elapsed)
+                    logger.info("Silence detected for %.0fs (required %.0fs), showing decision popup",
+                                elapsed, required)
                     threading.Thread(
                         target=self._save_milestone_segment,
                         args=("silence", True), daemon=True
                     ).start()
-        else:
-            # Audio resumed — reset silence tracking
-            self._recording_silence_start = None
-            self._silence_checkpoint_added = False
 
     def _save_milestone_segment(self, checkpoint_type: str, show_popup: bool = False) -> None:
         """Save current segment as a milestone and start a new one.
@@ -1144,13 +1381,7 @@ class FiberyTranscriptApp:
             )
 
             # Start new recorder for background segment
-            recordings_dir = (
-                Path(self.settings.recordings_dir)
-                if self.settings.recordings_dir
-                else self.data_dir / "recordings"
-            )
-            self._recorder = WavRecorder(recordings_dir)
-            self._recorder.start()
+            self._start_recorder(self._recording_channels)
             self._segment_start_time = time.monotonic()
 
             # Show or update the decision popup
@@ -1226,9 +1457,7 @@ class FiberyTranscriptApp:
         with self._stop_lock:
             if self.state != self.STATE_RECORDING:
                 return
-
-            # Release recording lock
-            self.release_recording_lock()
+            entity_for_lock = self._validated_entity if self._fibery_client else None
 
             # Stop current recording infrastructure
             if not self._sleeping:
@@ -1256,6 +1485,8 @@ class FiberyTranscriptApp:
                     self._recorder = None
             else:
                 self._sleeping = False
+
+            self._release_recording_lock_async(entity_for_lock)
 
             # Discard segments after the checkpoint
             self._discard_segments_after(checkpoint.segment_index)
@@ -1365,6 +1596,7 @@ class FiberyTranscriptApp:
             except Exception as e2:
                 logger.error("Finalize also failed: %s", e2)
                 self.state = self.STATE_COMPLETED
+                self._resume_background_scanning()
             self._notify_js(f"window.onWakeResumeFailed({json.dumps(str(e))})")
             return
 
@@ -1429,29 +1661,28 @@ class FiberyTranscriptApp:
         if not mic_device and not loopback_device:
             raise RuntimeError("No audio devices found after wake")
 
-        # Start new recorder
-        recordings_dir = (
-            Path(self.settings.recordings_dir) if self.settings.recordings_dir
-            else self.data_dir / "recordings"
-        )
-        self._recorder = WavRecorder(recordings_dir)
-        self._recorder.start()
+        output_channels = self._recording_channels
+        if output_channels is None:
+            output_channels = 2 if (mic_device is not None and loopback_device is not None) else 1
 
         # Set up new mixer
         self._mixer = AudioMixer(
             on_mixed_chunk=self._on_mixed_audio,
             has_mic=mic_device is not None,
             has_loopback=loopback_device is not None,
+            output_channels=output_channels,
         )
 
-        # Start capture (reuse existing processors)
+        # Start new recorder with the fixed session channel layout
+        self._start_recorder(output_channels)
+
+        # Start capture (reuse existing noise suppressor for level monitoring)
         self.audio_capture.start_capture(
             mic_device=mic_device,
             loopback_device=loopback_device,
             on_audio_chunk=self._on_audio_chunk,
             on_level_update=self._on_level_update,
             noise_suppressor=getattr(self, '_noise_suppressor', None),
-            agc=getattr(self, '_agc', None),
         )
 
         self._segment_start_time = time.monotonic()
@@ -1512,12 +1743,17 @@ class FiberyTranscriptApp:
                 from integrations.context_builder import build_word_boost
                 word_boost = build_word_boost(entity_ctx) or None
 
+            # Post-processing settings from user preferences
+            pp_settings = self._build_post_process_settings()
+
             result = transcribe_with_diarization(
                 api_key=get_key("assemblyai_api_key"),
                 audio_path=wav_path,
                 on_progress=on_progress,
                 compressed_path=compressed_path,
                 word_boost=word_boost,
+                post_process=pp_settings is not None,
+                post_process_settings=pp_settings,
             )
 
             results.set_batch_result(result)
@@ -1534,7 +1770,7 @@ class FiberyTranscriptApp:
             # Run Gemini transcript cleanup (speaker identification, sentence fixes, sections)
             raw_text = format_diarized_transcript(result["utterances"])
             gemini_key = get_key("gemini_api_key")
-            if gemini_key:
+            if self.settings.audio_transcript_cleanup_enabled and gemini_key:
                 try:
                     on_progress("Cleaning up transcript...")
                     from integrations.gemini_client import cleanup_transcript
@@ -1542,11 +1778,12 @@ class FiberyTranscriptApp:
 
                     meeting_context = build_summary_context(entity_ctx) if entity_ctx else ""
 
-                    # Determine best audio file for multimodal cleanup:
-                    # prefer compressed (OGG/FLAC) over WAV for faster upload.
-                    cleanup_audio = compressed_path or ""
+                    # Use the audio file that was actually uploaded (post-processed).
+                    # Falls back to compressed_path or raw WAV if not available.
+                    cleanup_audio = result.get("audio_path", "")
+                    if not cleanup_audio:
+                        cleanup_audio = compressed_path or ""
                     if not cleanup_audio and wav_path:
-                        # Check for OGG/FLAC created by _compress_audio during batch
                         for ext in (".ogg", ".flac"):
                             candidate = Path(wav_path).with_suffix(ext)
                             if candidate.exists():
@@ -1583,6 +1820,7 @@ class FiberyTranscriptApp:
             self._notify_js(f"window.setCleanedTranscript({json.dumps(cleaned_transcript)})")
 
             self.state = self.STATE_COMPLETED
+            self._resume_background_scanning()
             self._notify_js("window.onProcessingComplete()")
 
             # Auto-send transcript to Fibery using the frozen entity from session context
@@ -1598,10 +1836,28 @@ class FiberyTranscriptApp:
             if self.settings.audio_storage == "fibery":
                 audio_upload_ok = self._upload_audio_to_fibery(wav_path, session, token)
 
+            uploaded_audio_path = result.get("audio_path", "")
+
             # Post-processing for uploaded (browsed) files:
-            # Copy the compressed file to recordings_dir for local backup
+            # Copy the actual uploaded audio to recordings_dir for local backup
             if ctx.is_uploaded_file and self.settings.save_recordings:
-                self._copy_compressed_to_recordings(wav_path, compressed_path)
+                self._copy_compressed_to_recordings(
+                    wav_path,
+                    compressed_path,
+                    uploaded_audio_path,
+                )
+
+            # Clean up post-processed WAV (temporary artifact, not needed after upload)
+            processed = Path(wav_path).parent / f"{Path(wav_path).stem}_processed.wav"
+            if processed.exists():
+                try:
+                    processed.unlink()
+                    logger.info("Cleaned up processed audio: %s", processed.name)
+                except OSError as e:
+                    logger.warning("Could not delete %s: %s", processed.name, e)
+
+            if ctx.is_uploaded_file and not self.settings.save_recordings:
+                self._cleanup_uploaded_audio_artifacts(wav_path, uploaded_audio_path)
 
             # Clean up local recordings if user opted out of local storage
             # SAFETY: only delete if no Fibery upload was attempted, or if it succeeded.
@@ -1610,8 +1866,13 @@ class FiberyTranscriptApp:
             safe_to_delete = not fibery_upload_attempted or audio_upload_ok
             if not ctx.is_uploaded_file and not self.settings.save_recordings and safe_to_delete:
                 wav = Path(wav_path)
-                ogg = wav.with_suffix('.ogg')
-                for f in (wav, ogg):
+                candidates = [
+                    wav,
+                    wav.with_suffix('.ogg'),
+                    wav.parent / f"{wav.stem}_processed.ogg",
+                    wav.parent / f"{wav.stem}_processed.flac",
+                ]
+                for f in candidates:
                     if f.exists():
                         try:
                             f.unlink()
@@ -1619,7 +1880,6 @@ class FiberyTranscriptApp:
                         except OSError as e:
                             logger.warning("Could not delete %s: %s", f.name, e)
 
-            self.start_background_scanning()
             logger.info("Batch processing complete: %d utterances", len(result["utterances"]))
 
         except Exception as e:
@@ -1628,9 +1888,9 @@ class FiberyTranscriptApp:
                 return
             # Mark as completed even on failure
             self.state = self.STATE_COMPLETED
+            self._resume_background_scanning()
             self._notify_js(f"window.onBatchFailed({json.dumps({'message': _friendly_error(e), 'wav_path': wav_path or ''})})")
             self._notify_js(f"window.onError({json.dumps(_friendly_error(e))})")
-            self.start_background_scanning()
 
     def _upload_audio_to_fibery(self, wav_path: str, session: "RecordingSession" = None, session_token: int = None) -> bool:
         """Upload the audio recording to the linked Fibery entity's Files field.
@@ -1696,23 +1956,27 @@ class FiberyTranscriptApp:
                 )
             return False
 
-    def _copy_compressed_to_recordings(self, wav_path: str, compressed_path: str = None) -> None:
+    def _copy_compressed_to_recordings(
+        self,
+        wav_path: str,
+        compressed_path: str = None,
+        actual_audio_path: str = None,
+    ) -> None:
         """Copy the compressed audio file to recordings_dir for browsed files."""
         import shutil
 
-        recordings_dir = (
-            Path(self.settings.recordings_dir)
-            if self.settings.recordings_dir
-            else self.data_dir / "recordings"
-        )
+        recordings_dir = self._get_recordings_dir()
         recordings_dir.mkdir(parents=True, exist_ok=True)
 
         source = Path(wav_path)
         # Check for compressed file created by batch.py (next to source)
         candidates = [
+            Path(actual_audio_path) if actual_audio_path else None,
             Path(compressed_path) if compressed_path else None,
             source.with_suffix(".ogg"),
             source.with_suffix(".flac"),
+            source.parent / f"{source.stem}_processed.ogg",
+            source.parent / f"{source.stem}_processed.flac",
         ]
         for candidate in candidates:
             if candidate and candidate.exists() and candidate != source:
@@ -1734,6 +1998,32 @@ class FiberyTranscriptApp:
                     logger.info("Copied source file to recordings: %s", dest.name)
                 except OSError as e:
                     logger.warning("Could not copy to recordings dir: %s", e)
+
+    def _cleanup_uploaded_audio_artifacts(self, wav_path: str, actual_audio_path: str = "") -> None:
+        """Remove generated sidecar files for uploaded audio when local saving is off."""
+        source = Path(wav_path)
+        candidates: set[Path] = set()
+
+        if source.suffix.lower() == ".wav":
+            candidates.add(source.with_suffix(".ogg"))
+            candidates.add(source.with_suffix(".flac"))
+
+        for ext in (".wav", ".ogg", ".flac"):
+            candidates.add(source.parent / f"{source.stem}_processed{ext}")
+
+        if actual_audio_path:
+            actual = Path(actual_audio_path)
+            if actual != source:
+                candidates.add(actual)
+
+        for candidate in candidates:
+            if candidate == source or not candidate.exists():
+                continue
+            try:
+                candidate.unlink()
+                logger.info("Cleaned up uploaded-audio artifact: %s", candidate.name)
+            except OSError as e:
+                logger.warning("Could not delete %s: %s", candidate.name, e)
 
     def _auto_send_pending_summary(self) -> None:
         """Send a cached generated summary to Fibery (background thread)."""
@@ -1887,6 +2177,9 @@ class FiberyTranscriptApp:
 
         type_info = self.MEETING_TYPES[meeting_type]
 
+        if meeting_type == 'interview' and not name:
+            name = '-'
+
         if not name:
             return {'success': False, 'error': 'Meeting name is required'}
 
@@ -1925,6 +2218,7 @@ class FiberyTranscriptApp:
             self._validated_entity = entity
             self._fibery_client = client
             self._entity_context = None
+            self._linked_transcript_text = ""
 
             logger.info('Created Fibery meeting: %s (%s)', name, meeting_type)
 
@@ -1934,6 +2228,8 @@ class FiberyTranscriptApp:
                 'database': entity.database,
                 'space': entity.space,
                 'url': entity_url,
+                'has_transcript': False,
+                'transcript_text': '',
             }
 
             return result
@@ -2005,6 +2301,11 @@ class FiberyTranscriptApp:
             self._validated_entity = entity
             self._fibery_client = client
             self._entity_context = None
+            try:
+                self._linked_transcript_text = client.get_entity_transcript(entity) or ""
+            except Exception as exc:
+                logger.warning("Failed to fetch linked transcript: %s", exc)
+                self._linked_transcript_text = ""
 
             # If transcript is already available (entity linked after recording), auto-send now
             session_batch = self._session.results.get_batch_result() if self._session else None
@@ -2047,6 +2348,8 @@ class FiberyTranscriptApp:
                 "database": entity.database,
                 "space": entity.space,
                 "pending_summary": pending_summary,
+                "has_transcript": bool(self._linked_transcript_text.strip()),
+                "transcript_text": self._linked_transcript_text,
             }
 
             return result
@@ -2072,14 +2375,11 @@ class FiberyTranscriptApp:
         session_results = session.results if session else None
         entity = self._validated_entity
         client = self._fibery_client
-        batch = session_results.get_batch_result() if session_results else None
-        if not (batch and batch.get("utterances")):
+        transcript_text = self._get_summary_source_text(session)
+        if not transcript_text:
             return {"success": False, "error": "No transcript available"}
 
         try:
-            # Use cleaned transcript if available, otherwise format raw utterances
-            transcript_text = (session_results.get_cleaned_transcript() if session_results else None) or format_diarized_transcript(batch["utterances"])
-
             # Determine entity context for prompt (notes, interview vs meeting)
             # Use cached entity if available; otherwise use generic defaults
             notes = ""
@@ -2122,7 +2422,7 @@ class FiberyTranscriptApp:
                     logger.info("Summary send already in-flight, returning generated summary")
                     return {"success": True, "sent_to_fibery": False, "summary": summary}
                 try:
-                    client.update_summary_only(entity, ai_summary=summary, append=(self._transcript_mode == "append"))
+                    client.update_summary_only(entity, ai_summary=summary, append=(self._summary_mode == "append"))
                     if session_results:
                         session_results.finish_summary_send(success=True)
                     logger.info("Summary sent to Fibery")
@@ -2155,7 +2455,7 @@ class FiberyTranscriptApp:
             logger.info("Summary send already in-flight, skipping")
             return {"success": False, "error": "Summary send already in progress"}
         try:
-            client.update_summary_only(entity, ai_summary=summary)
+            client.update_summary_only(entity, ai_summary=summary, append=(self._summary_mode == "append"))
             if session_results:
                 session_results.finish_summary_send(success=True)
             logger.info("Pending summary sent to Fibery")
@@ -2180,11 +2480,8 @@ class FiberyTranscriptApp:
         # Capture locally to prevent TOCTOU
         session = self._session
         session_results = session.results if session else None
-        batch = session_results.get_batch_result() if session_results else None
-        if batch and batch.get("utterances"):
-            transcript_text = (session_results.get_cleaned_transcript() or
-                                format_diarized_transcript(batch["utterances"]))
-        else:
+        transcript_text = self._get_summary_source_text(session)
+        if not transcript_text:
             return {"success": False, "error": "No transcript available"}
 
         if session_results and not session_results.try_start_summary_send():
@@ -2230,7 +2527,7 @@ class FiberyTranscriptApp:
 
             if session_results:
                 session_results.set_generated_summary(summary)
-            client.update_summary_only(entity, ai_summary=summary)
+            client.update_summary_only(entity, ai_summary=summary, append=(self._summary_mode == "append"))
             if session_results:
                 session_results.finish_summary_send(success=True)
             logger.info("AI Summary updated in Fibery")

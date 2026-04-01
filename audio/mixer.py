@@ -1,33 +1,46 @@
-"""Mix microphone and system audio streams into a single PCM stream."""
+"""Mix microphone and system audio streams into a single PCM stream.
+
+When both mic and loopback are active, outputs stereo (ch0=mic, ch1=loopback).
+When only one source is active, outputs mono to halve file size.
+"""
 
 import logging
 import threading
+import time
 from typing import Callable
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# 100ms of 16-bit mono at 16 kHz → 1600 samples × 2 bytes
+# 100ms of 16-bit mono at 16 kHz -> 1600 samples x 2 bytes
 MIX_CHUNK_BYTES = 3200
 
-# Max buffering before force-mixing (prevents unbounded latency).
-# 5 chunks = 500ms — generous enough to absorb timing jitter between sources.
-_OVERFLOW_BYTES = MIX_CHUNK_BYTES * 5
+# Max buffering before discarding excess (prevents unbounded latency).
+# When one source delivers data in bursts (e.g. Bluetooth LE), we cap its
+# buffer to avoid accumulating a backlog that forces silence-padded chunks.
+_MAX_BUFFER_BYTES = MIX_CHUNK_BYTES * 10  # 1 second
+_STALL_TIMEOUT_SECONDS = 0.2
 
 
 class AudioMixer:
-    """Mixes mic and loopback audio into a single stream for transcription."""
+    """Mixes mic and loopback audio into a single stream for recording.
+
+    Stereo output when both sources active (ch0=mic, ch1=loopback).
+    Mono output when only one source active.
+    """
 
     def __init__(
         self,
         on_mixed_chunk: Callable[[bytes], None],
         has_mic: bool = True,
         has_loopback: bool = True,
+        stall_timeout_seconds: float = _STALL_TIMEOUT_SECONDS,
+        output_channels: int | None = None,
     ):
         """
         Args:
-            on_mixed_chunk: Callback receiving mixed 16-bit PCM mono audio.
+            on_mixed_chunk: Callback receiving 16-bit PCM audio (stereo or mono).
             has_mic: Whether a microphone source is active.
             has_loopback: Whether a loopback source is active.
         """
@@ -37,13 +50,36 @@ class AudioMixer:
         self._lock = threading.Lock()
         self._has_mic = has_mic
         self._has_loopback = has_loopback
+        if output_channels is None:
+            output_channels = 2 if (has_mic and has_loopback) else 1
+        if output_channels not in (1, 2):
+            raise ValueError(f"Unsupported output channel count: {output_channels}")
+        self._output_channels = output_channels
+        self._stall_timeout_seconds = stall_timeout_seconds
+        self._stall_warned_mic = False    # True once we've warned about mic stall
+        self._stall_warned_loop = False   # True once we've warned about loopback stall
+        now = time.monotonic()
+        self._last_mic_audio_time = now
+        self._last_loopback_audio_time = now
+        self._mic_stall_started: float | None = None
+        self._loopback_stall_started: float | None = None
+
+    @property
+    def channels(self) -> int:
+        """Number of output channels for emitted PCM."""
+        return self._output_channels
 
     def add_mic_audio(self, pcm_data: bytes) -> None:
         """Add microphone PCM data to the mix buffer."""
         if not pcm_data:
             return
         with self._lock:
+            now = time.monotonic()
+            self._last_mic_audio_time = now
+            self._clear_stall(is_mic=True, now=now)
+            self._stall_warned_mic = False  # Source is alive again
             self._mic_buffer += pcm_data
+            self._cap_buffer()
             self._try_mix()
 
     def add_loopback_audio(self, pcm_data: bytes) -> None:
@@ -51,45 +87,154 @@ class AudioMixer:
         if not pcm_data:
             return
         with self._lock:
+            now = time.monotonic()
+            self._last_loopback_audio_time = now
+            self._clear_stall(is_mic=False, now=now)
+            self._stall_warned_loop = False  # Source is alive again
             self._loopback_buffer += pcm_data
+            self._cap_buffer()
             self._try_mix()
 
+    def _cap_buffer(self) -> None:
+        """Discard oldest data if either buffer exceeds the cap.
+
+        When one source delivers data in bursts (e.g. Bluetooth LE loopback),
+        its buffer can grow much faster than the other. Without capping, the
+        mixer would drain the large buffer by padding the small one with
+        silence — producing dead-channel stuttering in stereo mode.
+
+        Instead, we drop the oldest data from the overflowed buffer. This
+        loses a bit of audio from the bursty source but keeps both channels
+        in sync and stutter-free.
+        """
+        if len(self._mic_buffer) > _MAX_BUFFER_BYTES:
+            excess = len(self._mic_buffer) - _MAX_BUFFER_BYTES
+            self._mic_buffer = self._mic_buffer[excess:]
+            # Warn once if the loopback side has no data — likely a stalled source
+            if self._has_loopback and not self._loopback_buffer and not self._stall_warned_loop:
+                logger.warning(
+                    "Mixer: loopback source appears stalled (mic buffer capped at %d bytes, "
+                    "loopback buffer empty); continuing with silence padding until loopback resumes",
+                    _MAX_BUFFER_BYTES,
+                )
+                self._stall_warned_loop = True
+        if len(self._loopback_buffer) > _MAX_BUFFER_BYTES:
+            excess = len(self._loopback_buffer) - _MAX_BUFFER_BYTES
+            self._loopback_buffer = self._loopback_buffer[excess:]
+            # Warn once if the mic side has no data — likely a stalled source
+            if self._has_mic and not self._mic_buffer and not self._stall_warned_mic:
+                logger.warning(
+                    "Mixer: mic source appears stalled (loopback buffer capped at %d bytes, "
+                    "mic buffer empty); continuing with silence padding until mic resumes",
+                    _MAX_BUFFER_BYTES,
+                )
+                self._stall_warned_mic = True
+
+    def _mark_stall(self, is_mic: bool, now: float) -> None:
+        """Mark a source as stalled and log once until it recovers."""
+        if is_mic:
+            if self._mic_stall_started is not None:
+                return
+            self._mic_stall_started = now
+            logger.warning("Mixer: microphone source stalled; padding microphone channel with silence")
+            return
+
+        if self._loopback_stall_started is not None:
+            return
+        self._loopback_stall_started = now
+        logger.warning("Mixer: loopback source stalled; padding system audio channel with silence")
+
+    def _clear_stall(self, is_mic: bool, now: float) -> None:
+        """Clear a stalled-source marker and log recovery once."""
+        if is_mic:
+            if self._mic_stall_started is None:
+                return
+            logger.info(
+                "Mixer: microphone source recovered after %.3fs",
+                now - self._mic_stall_started,
+            )
+            self._mic_stall_started = None
+            return
+
+        if self._loopback_stall_started is None:
+            return
+        logger.info(
+            "Mixer: loopback source recovered after %.3fs",
+            now - self._loopback_stall_started,
+        )
+        self._loopback_stall_started = None
+
+    def _source_stalled(self, is_mic: bool, now: float) -> bool:
+        """Return True when a source has been missing beyond the grace window."""
+        if is_mic and not self._has_mic:
+            return False
+        if not is_mic and not self._has_loopback:
+            return False
+
+        last_audio_time = self._last_mic_audio_time if is_mic else self._last_loopback_audio_time
+        if (now - last_audio_time) < self._stall_timeout_seconds:
+            return False
+
+        self._mark_stall(is_mic=is_mic, now=now)
+        return True
+
     def _try_mix(self) -> None:
-        """Mix available audio from both sources and emit.
+        """Emit paired chunks from both sources.
 
-        When both sources are active, waits for BOTH buffers to have a full
-        chunk before mixing.  This prevents one source from constantly
-        triggering silence-padded mixes while the other hasn't delivered yet.
-
-        A safety overflow threshold forces a mix if either buffer grows too
-        large, preventing unbounded latency when one source stalls.
+        In stereo mode, emit paired chunks normally, or pad the missing side
+        with silence once a source has stalled past the grace window.
+        In mono mode, emits whenever the active source has enough data.
         """
         while True:
             mic_ready = len(self._mic_buffer) >= MIX_CHUNK_BYTES
             loop_ready = len(self._loopback_buffer) >= MIX_CHUNK_BYTES
+            now = time.monotonic()
 
             if self._has_mic and self._has_loopback:
-                # Both sources active: prefer waiting for both.
-                # Force-mix if either buffer overflows to avoid unbounded latency.
-                overflow = (
-                    len(self._mic_buffer) >= _OVERFLOW_BYTES
-                    or len(self._loopback_buffer) >= _OVERFLOW_BYTES
-                )
-                if not ((mic_ready and loop_ready) or overflow):
+                # Stereo: use both sources when possible, otherwise let the
+                # healthy side continue once the missing side is clearly stalled.
+                if not (
+                    (mic_ready and loop_ready)
+                    or (mic_ready and self._source_stalled(is_mic=False, now=now))
+                    or (loop_ready and self._source_stalled(is_mic=True, now=now))
+                ):
+                    break
+            elif self._has_mic:
+                if not mic_ready:
+                    break
+            elif self._has_loopback:
+                if not loop_ready:
                     break
             else:
-                # Single source: mix whenever the active source has enough data.
-                if not (mic_ready or loop_ready):
-                    break
+                break
 
             mic_chunk = self._take_chunk(is_mic=True)
             loop_chunk = self._take_chunk(is_mic=False)
 
-            mic_samples = np.frombuffer(mic_chunk, dtype=np.int16).astype(np.float32)
-            loop_samples = np.frombuffer(loop_chunk, dtype=np.int16).astype(np.float32)
-            mixed = np.clip(mic_samples + loop_samples, -32768, 32767).astype(np.int16)
+            mic_samples = np.frombuffer(mic_chunk, dtype=np.int16)
+            loop_samples = np.frombuffer(loop_chunk, dtype=np.int16)
+            self._emit_chunk(mic_samples, loop_samples)
 
+    def _emit_chunk(self, mic_samples: np.ndarray, loop_samples: np.ndarray) -> None:
+        """Emit one chunk in the configured output format."""
+        if self.channels == 2:
+            stereo = np.empty(len(mic_samples) * 2, dtype=np.int16)
+            stereo[0::2] = mic_samples
+            stereo[1::2] = loop_samples
+            self._on_mixed_chunk(stereo.tobytes())
+            return
+
+        if self._has_mic and self._has_loopback:
+            mixed = np.clip(
+                mic_samples.astype(np.int32) + loop_samples.astype(np.int32),
+                -32768,
+                32767,
+            ).astype(np.int16)
             self._on_mixed_chunk(mixed.tobytes())
+            return
+
+        active = mic_samples if self._has_mic else loop_samples
+        self._on_mixed_chunk(active.tobytes())
 
     def _take_chunk(self, is_mic: bool) -> bytes:
         """Take MIX_CHUNK_BYTES from a buffer, padding with silence if short."""
@@ -126,10 +271,8 @@ class AudioMixer:
             mic_data = self._mic_buffer + b"\x00" * (flush_len - mic_len)
             loop_data = self._loopback_buffer + b"\x00" * (flush_len - loop_len)
 
-            mic_samples = np.frombuffer(mic_data, dtype=np.int16).astype(np.float32)
-            loop_samples = np.frombuffer(loop_data, dtype=np.int16).astype(np.float32)
-            mixed = np.clip(mic_samples + loop_samples, -32768, 32767).astype(np.int16)
-
-            self._on_mixed_chunk(mixed.tobytes())
+            mic_samples = np.frombuffer(mic_data, dtype=np.int16)
+            loop_samples = np.frombuffer(loop_data, dtype=np.int16)
+            self._emit_chunk(mic_samples, loop_samples)
             self._mic_buffer = b""
             self._loopback_buffer = b""

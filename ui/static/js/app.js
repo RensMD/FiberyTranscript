@@ -33,6 +33,7 @@ let timerAccumulatedMs = 0;
 let fiberyValidated = false;      // true once the link has been validated
 let currentFiberyUrl = '';        // the validated URL
 let generatedSummary = '';        // cached summary text from last successful summarize
+let linkedTranscriptText = '';    // transcript pulled from the linked Fibery meeting
 let selectedUploadPath = null;    // path to browsed audio file
 let currentEntityDb = '';         // entity database name (for Files support check)
 
@@ -40,6 +41,7 @@ let currentEntityDb = '';         // entity database name (for Files support che
 const recordBtn = document.getElementById('recordBtn');
 const recordBtnText = document.getElementById('recordBtnText');
 const recordTimer = document.getElementById('recordTimer');
+const audioSourceTools = document.getElementById('audioSourceTools');
 const micSelect = document.getElementById('micSelect');
 const loopbackSelect = document.getElementById('loopbackSelect');
 const refreshDevicesBtn = document.getElementById('refreshDevicesBtn');
@@ -85,6 +87,7 @@ const browseAudioBtn = document.getElementById('browseAudioBtn');
 const uploadFileInfoEl = document.getElementById('uploadFileInfo');
 const uploadFileName = document.getElementById('uploadFileName');
 const uploadFileMeta = document.getElementById('uploadFileMeta');
+const uploadTranscriptMode = document.getElementById('uploadTranscriptMode');
 const clearUploadBtn = document.getElementById('clearUploadBtn');
 const transcribeBtn = document.getElementById('transcribeBtn');
 const uploadDivider = document.getElementById('uploadDivider');
@@ -95,7 +98,9 @@ const audioStorageHint = document.getElementById('audioStorageHint');
 const additionalPrompt = document.getElementById('additionalPrompt');
 const sendActions = document.getElementById('sendActions');
 const summarizeBtn = document.getElementById('summarizeBtn');
+const summaryStatusRow = document.getElementById('summaryStatusRow');
 const summaryStatusBadge = document.getElementById('summaryStatusBadge');
+const copySummaryStatusBtn = document.getElementById('copySummaryStatusBtn');
 const copyTranscriptBtn = document.getElementById('copyTranscriptBtn');
 const copySummaryBtn = document.getElementById('copySummaryBtn');
 const retryRow = document.getElementById('retryRow');
@@ -261,10 +266,6 @@ function updateAudioStorageState() {
         fiberyRadio.disabled = true;
         audioStorageHint.textContent = 'Link a meeting first';
         if (fiberyRadio.checked) localRadio.checked = true;
-    } else if (currentEntityDb === 'Market Interview') {
-        fiberyRadio.disabled = true;
-        audioStorageHint.textContent = 'Not available for interviews';
-        if (fiberyRadio.checked) localRadio.checked = true;
     } else {
         const wasDisabled = fiberyRadio.disabled;
         fiberyRadio.disabled = false;
@@ -284,6 +285,38 @@ document.querySelectorAll('input[name="audioStorage"]').forEach(radio => {
         window.pywebview.api.save_settings({ audio_storage: e.target.value });
     });
 });
+
+function setAudioSourceToolsHidden(hidden) {
+    audioSourceTools.classList.toggle('hidden', hidden);
+    refreshDevicesBtn.classList.toggle('hidden', hidden);
+}
+
+function getSelectedTranscriptMode() {
+    const selected = document.querySelector('input[name="transcriptMode"]:checked');
+    return selected ? selected.value : 'append';
+}
+
+function syncTranscriptModeInputs(value) {
+    const normalized = value === 'replace' ? 'replace' : 'append';
+    const mainRadio = document.getElementById(normalized === 'append' ? 'modeAppend' : 'modeReplace');
+    const uploadRadio = document.getElementById(normalized === 'append' ? 'uploadModeAppend' : 'uploadModeReplace');
+    if (mainRadio) mainRadio.checked = true;
+    if (uploadRadio) uploadRadio.checked = true;
+}
+
+function applyTranscriptMode(value) {
+    syncTranscriptModeInputs(value);
+    window.pywebview.api.set_transcript_mode(value);
+}
+
+function setSelectedUploadUiVisible(visible) {
+    uploadFileInfoEl.classList.toggle('hidden', !visible);
+    uploadTranscriptMode.classList.toggle('hidden', !visible);
+    transcribeBtn.classList.toggle('hidden', !visible);
+    if (visible) {
+        syncTranscriptModeInputs(getSelectedTranscriptMode());
+    }
+}
 
 // === File Upload (Browse & Transcribe) ===
 browseAudioBtn.addEventListener('click', async () => {
@@ -316,8 +349,7 @@ browseAudioBtn.addEventListener('click', async () => {
         const fileName = filePath.replace(/\\/g, '/').split('/').pop();
         uploadFileName.textContent = fileName;
         uploadFileMeta.textContent = formatAudioFileInfo(validation);
-        uploadFileInfoEl.classList.remove('hidden');
-        transcribeBtn.classList.remove('hidden');
+        setSelectedUploadUiVisible(true);
         browseAudioBtn.classList.add('hidden');
     } catch (err) {
         showToast('Error: ' + err, 'error');
@@ -326,8 +358,7 @@ browseAudioBtn.addEventListener('click', async () => {
 
 clearUploadBtn.addEventListener('click', () => {
     selectedUploadPath = null;
-    uploadFileInfoEl.classList.add('hidden');
-    transcribeBtn.classList.add('hidden');
+    setSelectedUploadUiVisible(false);
     browseAudioBtn.classList.remove('hidden');
 });
 
@@ -337,6 +368,8 @@ transcribeBtn.addEventListener('click', async () => {
     transcribeBtn.disabled = true;
     transcribeBtn.textContent = 'Starting...';
     setStatus('processing', 'Processing');
+    setSelectedUploadUiVisible(false);
+    uploadCollapsible.classList.add('collapsed');
 
     // Warn if no meeting selected
     if (!fiberyValidated) {
@@ -348,15 +381,19 @@ transcribeBtn.addEventListener('click', async () => {
         if (!result.success) {
             showToast('Failed: ' + result.error, 'error');
             setStatus('', 'Error');
+            uploadCollapsible.classList.remove('collapsed');
+            setSelectedUploadUiVisible(true);
             transcribeBtn.disabled = false;
             transcribeBtn.textContent = 'Transcribe';
             return;
         }
-        // Hide upload section during processing
-        uploadCollapsible.classList.add('collapsed');
+        clearUploadBtn.disabled = true;
+        setAudioSourceToolsHidden(true);
     } catch (err) {
         showToast('Error: ' + err, 'error');
         setStatus('', 'Error');
+        uploadCollapsible.classList.remove('collapsed');
+        setSelectedUploadUiVisible(true);
         transcribeBtn.disabled = false;
         transcribeBtn.textContent = 'Transcribe';
     }
@@ -542,18 +579,120 @@ window.onPanelUrlChanged = function(url) {
     }
 };
 
-function looksLikeFiberyEntity(url) {
-    if (!url) return false;
+function updateCreateMeetingButtons() {
+    const hasName = createMeetingName.value.trim().length > 0;
+    document.querySelectorAll('.create-meeting-btn').forEach((button) => {
+        if (button.dataset.type === 'interview') {
+            button.disabled = false;
+        } else {
+            button.disabled = !hasName;
+        }
+    });
+}
+
+function extractFiberyEntityCandidateUrl(url) {
+    if (!url) return '';
     try {
-        const u = new URL(url);
-        if (u.hostname !== 'roboat.fibery.io') return false;
-        const segments = u.pathname.split('/').filter(Boolean);
-        // Need at least 2 segments: Space/entity-slug-NNN
-        if (segments.length < 2) return false;
-        // Last segment should end with -<digits> (Fibery entity URL pattern)
-        return /-\d+$/.test(segments[segments.length - 1]);
+        const parsed = new URL(url);
+        const pathSegments = parsed.pathname.split('/').filter(Boolean);
+        if (pathSegments.length >= 3 && /-\d+$/.test(pathSegments[pathSegments.length - 1])) {
+            return parsed.href;
+        }
+
+        const fragment = parsed.hash.replace(/^#/, '').split('/').filter(Boolean);
+        if (fragment.length >= 3 && /-\d+$/.test(fragment[fragment.length - 1])) {
+            return `${parsed.origin}/${fragment.join('/')}`;
+        }
     } catch {
-        return false;
+        return '';
+    }
+    return '';
+}
+
+function looksLikeFiberyEntity(url) {
+    return Boolean(extractFiberyEntityCandidateUrl(url));
+}
+
+function hasLocalTranscript() {
+    return Boolean(window.transcriptManager?.hasContent && window.transcriptManager.hasContent());
+}
+
+function hasLinkedTranscript() {
+    return Boolean(linkedTranscriptText && linkedTranscriptText.trim().length > 0);
+}
+
+function hasEffectiveTranscript() {
+    return hasLocalTranscript() || hasLinkedTranscript();
+}
+
+function getEffectiveTranscriptText() {
+    const localFormatted = window.transcriptManager?.getFormattedText
+        ? window.transcriptManager.getFormattedText()
+        : '';
+    if (localFormatted && localFormatted.trim()) {
+        return localFormatted;
+    }
+
+    const localText = window.transcriptManager?.getFullText
+        ? window.transcriptManager.getFullText()
+        : '';
+    if (localText && localText.trim()) {
+        return localText;
+    }
+
+    return hasLinkedTranscript() ? linkedTranscriptText : '';
+}
+
+function updateSummaryActionsState(scrollIntoView = false) {
+    const shouldShowActions =
+        !isRecording &&
+        !recordBtn.classList.contains('processing') &&
+        (fiberyValidated || hasLocalTranscript());
+
+    sendActions.classList.toggle('visible', shouldShowActions);
+
+    const hasTranscript = hasEffectiveTranscript();
+    summarizeBtn.disabled = !hasTranscript;
+    copyTranscriptBtn.disabled = !hasTranscript;
+    copySummaryBtn.disabled = !generatedSummary;
+
+    if (shouldShowActions && scrollIntoView) {
+        sendActions.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+}
+
+function applyLinkedEntity(result, entityUrl) {
+    fiberyValidated = true;
+    currentFiberyUrl = entityUrl || result.url || panelCurrentUrl || '';
+    currentEntityUrl = result.url || entityUrl || panelCurrentUrl || '';
+    currentEntityDb = result.database || '';
+    linkedTranscriptText = result.transcript_text || '';
+    fiberyDisambiguation.classList.add('hidden');
+    fiberyMissingWarning.classList.add('hidden');
+
+    entityName.textContent = result.entity_name || '';
+    entityDb.textContent = result.database || '';
+    entityLink.href = currentEntityUrl || '#';
+    entityLink.title = 'Open in Fibery';
+    fiberyEntityInfo.classList.remove('hidden');
+
+    fiberySelectRow.classList.add('hidden');
+    fiberySelectHint.classList.add('hidden');
+    createMeetingDividerRow.classList.add('hidden');
+    createMeetingFields.classList.add('hidden');
+    setFiberyValidateStatus('', '');
+    updateAudioStorageState();
+    refreshDeviceList();
+    sendPanelCollapsible.classList.remove('collapsed');
+    updateSummaryActionsState();
+
+    if (isRecording) {
+        audioStorageCollapsible.classList.remove('collapsed');
+        transcriptModeCollapsible.classList.remove('collapsed');
+    }
+
+    if (result.pending_summary && sendActions.classList.contains('visible')) {
+        setFiberyStatus('Sending summary to Fibery...', '');
     }
 }
 
@@ -580,31 +719,7 @@ async function selectMeetingFromPanel() {
     try {
         const result = await window.pywebview.api.select_meeting_from_panel();
         if (result.success) {
-            fiberyValidated = true;
-            currentFiberyUrl = panelCurrentUrl;
-            currentEntityUrl = panelCurrentUrl;
-            currentEntityDb = result.database || '';
-            fiberyDisambiguation.classList.add('hidden');
-            fiberyMissingWarning.classList.add('hidden');
-
-            entityName.textContent = result.entity_name;
-            entityDb.textContent = result.database;
-            entityLink.href = currentEntityUrl;
-            entityLink.title = 'Open in Fibery';
-            fiberyEntityInfo.classList.remove('hidden');
-
-            fiberySelectRow.classList.add('hidden');
-            fiberySelectHint.classList.add('hidden');
-            createMeetingDividerRow.classList.add('hidden');
-            createMeetingFields.classList.add('hidden');
-            setFiberyValidateStatus('', '');
-            updateAudioStorageState();
-
-            // Show audio storage if recording is active
-            if (isRecording) {
-                audioStorageCollapsible.classList.remove('collapsed');
-                transcriptModeCollapsible.classList.remove('collapsed');
-            }
+            applyLinkedEntity(result, extractFiberyEntityCandidateUrl(panelCurrentUrl));
 
             // Check recording lock
             if (result.recording_lock && result.recording_lock.locked) {
@@ -621,9 +736,6 @@ async function selectMeetingFromPanel() {
                 }
             }
 
-            if (result.pending_summary && sendActions.classList.contains('visible')) {
-                setFiberyStatus('Sending summary to Fibery...', '');
-            }
         } else if (result.needs_disambiguation) {
             fiberyDisambiguation.classList.remove('hidden');
             disambigOptions.innerHTML = '';
@@ -652,54 +764,29 @@ async function selectMeetingFromPanel() {
 }
 
 // === Create Meeting ===
-createMeetingName.addEventListener('input', () => {
-    const hasName = createMeetingName.value.trim().length > 0;
-    document.querySelectorAll('.create-meeting-btn').forEach(b => { b.disabled = !hasName; });
-});
+createMeetingName.addEventListener('input', updateCreateMeetingButtons);
 
 document.querySelectorAll('.create-meeting-btn').forEach(btn => {
     btn.addEventListener('click', () => createMeeting(btn.dataset.type));
 });
+updateCreateMeetingButtons();
 
 async function createMeeting(meetingType) {
     // Disable all create buttons while working
     const buttons = document.querySelectorAll('.create-meeting-btn');
     buttons.forEach(b => { b.disabled = true; });
-    setFiberyValidateStatus('Creating meeting...', '');
 
     try {
-        const result = await window.pywebview.api.create_fibery_meeting(meetingType, createMeetingName.value.trim());
+        setFiberyValidateStatus('Creating meeting...', '');
+        const meetingName = createMeetingName.value.trim();
+        const createName = meetingType === 'interview' && !meetingName ? '-' : meetingName;
+        const result = await window.pywebview.api.create_fibery_meeting(meetingType, createName);
         if (result.success) {
-            fiberyValidated = true;
-            currentFiberyUrl = result.url || '';
-            currentEntityUrl = result.url || '';
-            currentEntityDb = result.database || '';
-            fiberyDisambiguation.classList.add('hidden');
-            fiberyMissingWarning.classList.add('hidden');
-
-            entityName.textContent = result.entity_name;
-            entityDb.textContent = result.database;
-            if (currentEntityUrl) {
-                entityLink.href = currentEntityUrl;
-                entityLink.title = 'Open in Fibery';
-            }
-            fiberyEntityInfo.classList.remove('hidden');
-            createMeetingDividerRow.classList.add('hidden');
-            createMeetingFields.classList.add('hidden');
-            setFiberyValidateStatus('', '');
+            applyLinkedEntity(result, result.url || '');
 
             // Navigate panel to the new entity
             if (currentEntityUrl) {
-                window.pywebview.api.navigate_entity_panel(currentEntityUrl);
-            }
-            fiberySelectRow.classList.add('hidden');
-            fiberySelectHint.classList.add('hidden');
-            updateAudioStorageState();
-
-            // Show audio storage if recording is active
-            if (isRecording) {
-                audioStorageCollapsible.classList.remove('collapsed');
-                transcriptModeCollapsible.classList.remove('collapsed');
+                await callApi('navigate_entity_panel', currentEntityUrl);
             }
 
             // Check recording lock if entity created while recording
@@ -716,13 +803,16 @@ async function createMeeting(meetingType) {
                     return;
                 }
             }
+            if (result.warning) {
+                showToast(result.warning, 'warning', 8000);
+            }
         } else {
             setFiberyValidateStatus('Error: ' + result.error, 'error');
         }
     } catch (err) {
         setFiberyValidateStatus('Error: ' + err, 'error');
     } finally {
-        buttons.forEach(b => { b.disabled = !createMeetingName.value.trim(); });
+        updateCreateMeetingButtons();
     }
 }
 
@@ -731,6 +821,7 @@ function resetFiberyValidation() {
     currentFiberyUrl = '';
     currentEntityUrl = '';
     currentEntityDb = '';
+    linkedTranscriptText = '';
     fiberyEntityInfo.classList.add('hidden');
     fiberyDisambiguation.classList.add('hidden');
     fiberySelectRow.classList.remove('hidden');
@@ -738,11 +829,15 @@ function resetFiberyValidation() {
     createMeetingDividerRow.classList.remove('hidden');
     createMeetingFields.classList.remove('hidden');
     createMeetingName.value = '';
-    document.querySelectorAll('.create-meeting-btn').forEach(b => { b.disabled = true; });
+    updateCreateMeetingButtons();
     entityLink.href = '#';
     setFiberyValidateStatus('', '');
     updateSelectButtonState();
     updateAudioStorageState();
+    if (!hasLocalTranscript() && !selectedUploadPath && !isRecording && !recordBtn.classList.contains('processing')) {
+        sendPanelCollapsible.classList.add('collapsed');
+    }
+    updateSummaryActionsState();
 }
 
 changeLinkBtn.addEventListener('click', async () => {
@@ -756,6 +851,9 @@ changeLinkBtn.addEventListener('click', async () => {
     // Re-collapse toggles when meeting deselected
     audioStorageCollapsible.classList.add('collapsed');
     transcriptModeCollapsible.classList.add('collapsed');
+    if (!hasLocalTranscript() && !selectedUploadPath) {
+        sendPanelCollapsible.classList.add('collapsed');
+    }
     // Show warning if deselected during recording
     if (isRecording) {
         fiberyMissingWarning.classList.remove('hidden');
@@ -785,6 +883,7 @@ async function resetSession() {
 
     // Clear transcript DOM so stale data cannot leak into the next session
     window.transcriptManager.clear();
+    linkedTranscriptText = '';
 
     // Reset audio storage to settings default
     const defaultStorage = window._defaultAudioStorage || 'local';
@@ -795,10 +894,14 @@ async function resetSession() {
     // Reset transcript mode to append
     const appendRadio = document.getElementById('modeAppend');
     if (appendRadio) appendRadio.checked = true;
+    syncTranscriptModeInputs('append');
+    const summaryAppendRadio = document.getElementById('summaryModeAppend');
+    if (summaryAppendRadio) summaryAppendRadio.checked = true;
 
     // Reset recording meta and button
     recordingMetaCollapsible.classList.add('collapsed');
     audioHealthEl.classList.add('hidden');
+    setAudioSourceToolsHidden(false);
     setStatus('', '');
     recordTimer.textContent = '00:00:00';
     timerAccumulatedMs = 0;
@@ -813,20 +916,22 @@ async function resetSession() {
     // Clear text fields
     additionalPrompt.value = '';
     createMeetingName.value = '';
+    updateCreateMeetingButtons();
 
     // Reset upload state
     selectedUploadPath = null;
-    uploadFileInfoEl.classList.add('hidden');
-    transcribeBtn.classList.add('hidden');
+    setSelectedUploadUiVisible(false);
     transcribeBtn.disabled = false;
     transcribeBtn.textContent = 'Transcribe';
+    clearUploadBtn.disabled = false;
     browseAudioBtn.classList.remove('hidden');
 
     // Reset summary and retry state
     generatedSummary = '';
     sendActions.classList.remove('visible');
-    summaryStatusBadge.textContent = '';
+    setFiberyStatus('', '');
     copySummaryBtn.disabled = true;
+    copyTranscriptBtn.disabled = true;
     summarizeBtn.textContent = 'Summarize';
     retryTranscriptBtn.style.display = 'none';
     retryAudioUploadBtn.style.display = 'none';
@@ -881,7 +986,20 @@ document.getElementById('decisionEndAtBtn').addEventListener('click', () => {
 // --- Transcript Mode Toggle ---
 document.querySelectorAll('input[name="transcriptMode"]').forEach(radio => {
     radio.addEventListener('change', (e) => {
-        window.pywebview.api.set_transcript_mode(e.target.value);
+        applyTranscriptMode(e.target.value);
+    });
+});
+
+document.querySelectorAll('input[name="uploadTranscriptMode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        applyTranscriptMode(e.target.value);
+    });
+});
+
+// --- Summary Mode Toggle ---
+document.querySelectorAll('input[name="summaryMode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        window.pywebview.api.set_summary_mode(e.target.value);
     });
 });
 
@@ -956,7 +1074,6 @@ async function startRecording() {
     }
 
     try {
-        await callApi('stop_background_scanning');
         await callApi('start_recording', micIdx, loopIdx);
     } catch (err) {
         // Revert UI on failure
@@ -979,14 +1096,16 @@ async function startRecording() {
 }
 
 async function stopRecording() {
+    freezeTimer();
     try {
         await callApi('stop_recording');
         // Only transition UI on success
         isRecording = false;
-        stopTimer();
         audioHealthEl.classList.add('hidden');
         setStatus('processing', 'Processing...');
+        setAudioSourceToolsHidden(true);
     } catch (err) {
+        startTimer();
         // Stop failed — backend is STILL RECORDING. Keep UI in recording state.
         console.error('Failed to stop recording:', err);
         showToast('Failed to stop recording: ' + err, 'error');
@@ -995,10 +1114,25 @@ async function stopRecording() {
 }
 
 // === Timer ===
+function getCurrentTimerMs() {
+    if (startTime === null) {
+        return timerAccumulatedMs;
+    }
+    return timerAccumulatedMs + Math.max(0, Date.now() - startTime);
+}
+
+function freezeTimer() {
+    timerAccumulatedMs = getCurrentTimerMs();
+    recordTimer.textContent = formatTime(timerAccumulatedMs);
+    stopTimer();
+}
+
 function startTimer() {
+    stopTimer();
     startTime = Date.now();
+    recordTimer.textContent = formatTime(timerAccumulatedMs);
     timerInterval = setInterval(() => {
-        recordTimer.textContent = formatTime(timerAccumulatedMs + (Date.now() - startTime));
+        recordTimer.textContent = formatTime(getCurrentTimerMs());
     }, 1000);
 }
 
@@ -1007,6 +1141,7 @@ function stopTimer() {
         clearInterval(timerInterval);
         timerInterval = null;
     }
+    startTime = null;
 }
 
 function formatTime(ms) {
@@ -1036,6 +1171,7 @@ function setStatus(state, text) {
         // idle / reset
         recordBtnText.textContent = 'Start Recording';
     }
+    updateSummaryActionsState();
 }
 
 // === Called from Python with progress updates during batch processing ===
@@ -1046,8 +1182,11 @@ window.onProcessingProgress = function(message) {
 // === Called from Python when processing completes ===
 window.onProcessingComplete = function() {
     setStatus('completed', 'Done');
+    audioStorageCollapsible.classList.add('collapsed');
+    transcriptModeCollapsible.classList.add('collapsed');
     showSendActions();
     newMeetingBtn.classList.remove('hidden');
+    const hadUploadedFile = Boolean(selectedUploadPath);
 
     // Warn if transcript is empty (e.g. very short recording with no speech).
     // Check both cleaned text and raw DOM elements — cleaned text can be empty
@@ -1056,22 +1195,32 @@ window.onProcessingComplete = function() {
         showToast('No speech detected in the recording.', 'warning', 8000);
     }
 
-    // Safe to resume level monitoring now that batch processing is done
-    // (background scanning is restarted by Python at end of batch processing)
+    // Safe to resume level monitoring now that batch processing is done.
+    // The background scanner keeps running and will resume its idle checks.
     startMonitoring();
 
     // Reset upload state but keep section hidden until "New meeting" reset
     selectedUploadPath = null;
-    uploadFileInfoEl.classList.add('hidden');
-    transcribeBtn.classList.add('hidden');
+    setSelectedUploadUiVisible(false);
     transcribeBtn.disabled = false;
     transcribeBtn.textContent = 'Transcribe';
+    clearUploadBtn.disabled = false;
     browseAudioBtn.classList.remove('hidden');
+    if (hadUploadedFile) {
+        uploadCollapsible.classList.add('collapsed');
+    }
     // Upload section stays collapsed — revealed on resetSession()
 };
 
 window.onError = function(message) {
     setStatus('', '');
+    clearUploadBtn.disabled = false;
+    if (selectedUploadPath) {
+        uploadCollapsible.classList.remove('collapsed');
+        setSelectedUploadUiVisible(true);
+        transcribeBtn.disabled = false;
+        transcribeBtn.textContent = 'Transcribe';
+    }
     showToast(message, 'error', 8000);
     newMeetingBtn.classList.remove('hidden');
 };
@@ -1081,15 +1230,20 @@ window.onBatchFailed = function(info) {
     setStatus('', '');
     sendActions.classList.remove('visible');
     uploadCollapsible.classList.remove('collapsed');
+    clearUploadBtn.disabled = false;
+    if (selectedUploadPath) {
+        setSelectedUploadUiVisible(true);
+        transcribeBtn.disabled = false;
+        transcribeBtn.textContent = 'Transcribe';
+    }
     _lastFailedWavPath = (info && info.wav_path) || '';
     if (_lastFailedWavPath) {
         showToast('Transcription failed. Your recording was saved — click Retry to try again.', 'info', 10000);
         retryBatchBtn.style.display = '';
     }
     newMeetingBtn.classList.remove('hidden');
-    // Resume idle monitoring (same as onProcessingComplete)
+    // Resume idle monitoring
     startMonitoring();
-    window.pywebview.api.start_background_scanning();
 };
 
 // === Decision Popup (silence/sleep) ===
@@ -1185,6 +1339,7 @@ window.onAutoStopComplete = function() {
     isRecording = false;
     stopTimer();
     setStatus('processing', 'Processing...');
+    setAudioSourceToolsHidden(true);
     showToast('Processing recording...', 'info', 5000);
 };
 
@@ -1205,6 +1360,7 @@ window.onWakeResumeFailed = function(errorMsg) {
     isRecording = false;
     stopTimer();
     setStatus('processing', 'Processing...');
+    setAudioSourceToolsHidden(true);
     showToast('Could not resume after sleep: ' + errorMsg, 'warning', 10000);
 };
 
@@ -1213,6 +1369,7 @@ window.onRecordingEndedForProcessing = function() {
     isRecording = false;
     stopTimer();
     setStatus('processing', 'Processing...');
+    setAudioSourceToolsHidden(true);
 };
 
 window.onSleepDuringProcessing = function() {
@@ -1255,10 +1412,7 @@ function updateDeviceWarning(selectEl, scanResults) {
 
 // === Step 3: Show action buttons after processing ===
 function showSendActions() {
-    summarizeBtn.disabled = false;
-    copySummaryBtn.disabled = true; // enabled once summary is generated
-    sendActions.classList.add('visible');
-    sendActions.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    updateSummaryActionsState(true);
 }
 
 function getSummaryStyle() {
@@ -1270,6 +1424,10 @@ function getSummaryStyle() {
 window.onTranscriptSentToFibery = function() {
     setStatus('completed', 'Transcript sent');
     retryTranscriptBtn.style.display = 'none';
+};
+
+window.onFiberyAssigneeWarning = function(message) {
+    showToast(message || 'Please update Fibery username in Settings.', 'warning', 8000);
 };
 
 window.onTranscriptSendError = function(message) {
@@ -1289,7 +1447,7 @@ window.onTranscriptSendError = function(message) {
 
 // === Summarize (step 3) ===
 summarizeBtn.addEventListener('click', async () => {
-    if (!window.transcriptManager.hasContent()) {
+    if (!hasEffectiveTranscript()) {
         setFiberyStatus('No transcript available yet.', 'error');
         return;
     }
@@ -1322,12 +1480,14 @@ window.onSummarizeComplete = function(result) {
         // No link — prompt user to add one
         setFiberyStatus('Fibery link missing', 'error');
     }
+    updateSummaryActionsState();
 };
 
 window.onSummarizeError = function(message) {
     setFiberyStatus('Error: ' + message, 'error');
     summarizeBtn.disabled = false;
     summarizeBtn.textContent = 'Retry Summary';
+    updateSummaryActionsState();
 };
 
 // === Pending summary sent after link was added ===
@@ -1342,6 +1502,10 @@ window.onPendingSummarySendError = function(message) {
 function setFiberyStatus(text, type) {
     summaryStatusBadge.textContent = text || '';
     summaryStatusBadge.className = 'status-badge' + (type ? ' ' + type : '');
+    const hasText = Boolean(text);
+    copySummaryStatusBtn.textContent = 'Copy Status';
+    summaryStatusRow.classList.toggle('hidden', !hasText);
+    copySummaryStatusBtn.classList.toggle('hidden', !hasText);
 }
 
 // === Retry Handlers ===
@@ -1384,8 +1548,7 @@ retryBatchBtn.addEventListener('click', async () => {
 
 // === Transcript Actions ===
 copyTranscriptBtn.addEventListener('click', () => {
-    const text = window.transcriptManager.getFormattedText() ||
-                 window.transcriptManager.getFullText();
+    const text = getEffectiveTranscriptText();
     if (text) {
         navigator.clipboard.writeText(text).then(() => {
             copyTranscriptBtn.textContent = 'Copied!';
@@ -1396,6 +1559,8 @@ copyTranscriptBtn.addEventListener('click', () => {
     }
 });
 
+updateSummaryActionsState();
+
 copySummaryBtn.addEventListener('click', () => {
     if (generatedSummary) {
         navigator.clipboard.writeText(generatedSummary).then(() => {
@@ -1405,32 +1570,41 @@ copySummaryBtn.addEventListener('click', () => {
     }
 });
 
-// === Device Auto-Refresh ===
-setInterval(async () => {
-    if (!isRecording && !recordBtn.classList.contains('processing') && !recordBtn.classList.contains('completed')) {
-        const prevMic = micSelect.value;
-        const prevLoop = loopbackSelect.value;
-        try {
-            const devices = await window.pywebview.api.get_audio_devices();
-            // Guard: if refresh returns error or empty, keep existing options
-            if (devices.error || (devices.microphones.length === 0 && devices.loopbacks.length === 0)) {
-                console.warn('Device refresh returned error or empty, keeping current list');
-                return;
-            }
-            await loadDevices();
-        } catch (err) {
-            console.warn('Device refresh failed, keeping current list:', err);
+copySummaryStatusBtn.addEventListener('click', () => {
+    const statusText = summaryStatusBadge.textContent;
+    if (statusText) {
+        navigator.clipboard.writeText(statusText).then(() => {
+            copySummaryStatusBtn.textContent = 'Copied!';
+            setTimeout(() => { copySummaryStatusBtn.textContent = 'Copy Status'; }, 2000);
+        });
+    }
+});
+
+// === On-Demand Device Refresh ===
+async function refreshDeviceList() {
+    if (isRecording || recordBtn.classList.contains('processing') || recordBtn.classList.contains('completed')) {
+        return;
+    }
+    const prevMic = micSelect.value;
+    const prevLoop = loopbackSelect.value;
+    try {
+        const devices = await window.pywebview.api.get_audio_devices();
+        if (devices.error || (devices.microphones.length === 0 && devices.loopbacks.length === 0)) {
+            console.warn('Device refresh returned error or empty, keeping current list');
             return;
         }
-        // Restore previous selection if still available
-        if (prevMic && micSelect.querySelector(`option[value="${prevMic}"]`)) {
-            micSelect.value = prevMic;
-        }
-        if (prevLoop && loopbackSelect.querySelector(`option[value="${prevLoop}"]`)) {
-            loopbackSelect.value = prevLoop;
-        }
+        await loadDevices();
+    } catch (err) {
+        console.warn('Device refresh failed, keeping current list:', err);
+        return;
     }
-}, 10000);
+    if (prevMic && micSelect.querySelector(`option[value="${prevMic}"]`)) {
+        micSelect.value = prevMic;
+    }
+    if (prevLoop && loopbackSelect.querySelector(`option[value="${prevLoop}"]`)) {
+        loopbackSelect.value = prevLoop;
+    }
+}
 
 // === Update Available Banner ===
 window.onUpdateAvailable = function(info) {

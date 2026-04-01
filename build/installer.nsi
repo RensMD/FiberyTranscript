@@ -12,7 +12,7 @@
 
 ; --- Version (can be overridden via makensis -DVERSION=x.y.z) ---
 !ifndef VERSION
-    !define VERSION "1.3.0"
+    !define VERSION "1.4.0"
 !endif
 
 ; --- General ---
@@ -105,10 +105,12 @@ Section "Install"
     WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript" "EstimatedSize" "$0"
 
     ; --- Start on boot: set or remove registry Run key ---
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Fibery Transcript"
     ${If} $CfgAutoStart == "true"
         WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FiberyTranscript" "$INSTDIR\FiberyTranscript.exe"
     ${Else}
         DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FiberyTranscript"
+        DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Fibery Transcript"
     ${EndIf}
 
     ; --- Write installer_prefs.json for the app to merge on first launch ---
@@ -238,8 +240,8 @@ Function ConfigPageCreate
         Abort
     ${EndIf}
 
-    ; --- Your first name ---
-    ${NSD_CreateLabel} 0 0 100% 12u "Your first name (used to identify who is recording):"
+    ; --- Your fibery username ---
+    ${NSD_CreateLabel} 0 0 100% 12u "Your Fibery username (usually your first name):"
     Pop $LblName
     ${NSD_CreateText} 0 14u 60% 14u "$CfgDisplayName"
     Pop $TxtName
@@ -324,6 +326,7 @@ Section "Uninstall"
 
     ; Remove startup entry (if set)
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "FiberyTranscript"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Fibery Transcript"
 
     ; Remove registry entries
     DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\FiberyTranscript"

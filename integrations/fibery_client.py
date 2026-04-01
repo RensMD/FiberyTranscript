@@ -192,6 +192,20 @@ class FiberyClient:
 
         return self._get_document_content(secret)
 
+    def get_entity_transcript(self, entity: FiberyEntity) -> str:
+        """Fetch the Transcript rich-text content from a Fibery entity."""
+        if not entity.uuid:
+            self.get_entity_uuid(entity)
+
+        transcript_field = f"{entity.space}/Transcript"
+        secrets = self._get_document_secrets(entity, [transcript_field])
+        secret = secrets.get(transcript_field)
+        if not secret:
+            logger.info("No document secret for Transcript field, returning empty")
+            return ""
+
+        return self._get_document_content(secret)
+
     def get_entity_name(self, entity: FiberyEntity) -> str:
         """Fetch the display name of a Fibery entity.
 
@@ -624,7 +638,7 @@ class FiberyClient:
 
     # --- File upload ---
 
-    _DATABASES_WITH_FILES = {"External Meeting", "Internal Meeting"}
+    _DATABASES_WITH_FILES = {"External Meeting", "Internal Meeting", "Market Interview"}
     _FILE_UPLOAD_TIMEOUT = 300  # seconds (large audio files)
 
     def entity_supports_files(self, entity: FiberyEntity) -> bool:
@@ -677,17 +691,7 @@ class FiberyClient:
         if not entity.uuid:
             self.get_entity_uuid(entity)
 
-        payload = [{
-            "command": "fibery.entity/add-collection-items",
-            "args": {
-                "type": f"{entity.space}/{entity.database}",
-                "field": "Files/Files",
-                "entity": {"fibery/id": entity.uuid},
-                "items": [{"fibery/id": file_id}],
-            },
-        }]
-        resp = self._session.post(self._api_url, json=payload, timeout=self._TIMEOUT)
-        resp.raise_for_status()
+        self._add_collection_items(entity, "Files/Files", [{"fibery/id": file_id}])
         logger.info("Attached file %s to entity %s", file_id, entity.uuid)
 
     # --- Recording lock ---
@@ -832,3 +836,41 @@ class FiberyClient:
         _flush_ol()
 
         return "".join(parts) or "<p></p>"
+
+    def _add_collection_items(self, entity: FiberyEntity, field: str, items: list[dict]) -> None:
+        """Add collection relation items to an entity."""
+        if not items:
+            return
+        if not entity.uuid:
+            self.get_entity_uuid(entity)
+
+        payload = [{
+            "command": "fibery.entity/add-collection-items",
+            "args": {
+                "type": f"{entity.space}/{entity.database}",
+                "field": field,
+                "entity": {"fibery/id": entity.uuid},
+                "items": items,
+            },
+        }]
+        resp = self._session.post(self._api_url, json=payload, timeout=self._TIMEOUT)
+        resp.raise_for_status()
+
+    def _remove_collection_items(self, entity: FiberyEntity, field: str, items: list[dict]) -> None:
+        """Remove collection relation items from an entity."""
+        if not items:
+            return
+        if not entity.uuid:
+            self.get_entity_uuid(entity)
+
+        payload = [{
+            "command": "fibery.entity/remove-collection-items",
+            "args": {
+                "type": f"{entity.space}/{entity.database}",
+                "field": field,
+                "entity": {"fibery/id": entity.uuid},
+                "items": items,
+            },
+        }]
+        resp = self._session.post(self._api_url, json=payload, timeout=self._TIMEOUT)
+        resp.raise_for_status()

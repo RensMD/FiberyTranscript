@@ -3,6 +3,7 @@
 import logging
 import webview
 
+from config.constants import APP_WINDOW_TITLE
 from utils.platform_utils import get_resource_path
 
 logger = logging.getLogger(__name__)
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 _cached_ico_path: str = ""
 
 
-def create_window(api_bridge, title: str = "FiberyTranscript", confirm_close: bool = False) -> webview.Window:
+def create_window(api_bridge, title: str = APP_WINDOW_TITLE, confirm_close: bool = False) -> webview.Window:
     """Create and return the main pywebview window.
 
     Args:

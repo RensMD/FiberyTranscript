@@ -160,6 +160,18 @@ class ApiBridge:
         """Get current transcript mode."""
         return {"success": True, "mode": self._app._transcript_mode}
 
+    def set_summary_mode(self, mode: str) -> dict:
+        """Set summary mode to 'append' or 'replace' for this meeting."""
+        if mode not in ("append", "replace"):
+            return {"success": False, "error": "Invalid mode"}
+        self._app._summary_mode = mode
+        logger.info("Summary mode set to: %s", mode)
+        return {"success": True}
+
+    def get_summary_mode(self) -> dict:
+        """Get current summary mode."""
+        return {"success": True, "mode": self._app._summary_mode}
+
     # --- File Upload (Browse & Transcribe) ---
 
     def browse_audio_file(self) -> dict:
@@ -245,6 +257,12 @@ class ApiBridge:
         "default_panel_page": str,
         "noise_suppression": bool,
         "agc": bool,
+        "audio_transcript_cleanup_enabled": bool,
+        "post_processing": bool,
+        "echo_cancellation": bool,
+        "post_noise_suppression": bool,
+        "post_agc": bool,
+        "post_normalize": bool,
     }
 
     def save_settings(self, settings_dict: dict) -> dict:

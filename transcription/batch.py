@@ -91,6 +91,8 @@ def transcribe_with_diarization(
     on_progress: Optional[Callable[[str], None]] = None,
     compressed_path: Optional[str] = None,
     word_boost: Optional[list[str]] = None,
+    post_process: bool = True,
+    post_process_settings: Optional[dict] = None,
 ) -> dict:
     """Transcribe audio file with speaker diarization.
 
@@ -100,6 +102,9 @@ def transcribe_with_diarization(
         on_progress: Optional callback for progress updates.
         compressed_path: Pre-compressed file from streaming recording.
             Skips the compression step if provided and valid.
+        post_process: Run post-processing pipeline before upload.
+        post_process_settings: Optional stage toggles with keys
+            echo_cancel, noise_suppress, agc, normalize.
 
     Returns:
         Dict with 'utterances' (list of speaker-labeled segments),
@@ -109,14 +114,33 @@ def transcribe_with_diarization(
 
     aai.settings.api_key = api_key
 
-    # Normalize audio levels before compression/upload
+    # Post-processing pipeline (echo cancellation, denoise, AGC, normalize).
+    # On success, use the processed WAV for upload (force re-compression).
+    # On failure, fall back to the parallel OGG (has denoise+AGC from recording).
+    if post_process:
+        try:
+            from audio.post_processor import PostProcessor
+            pp_kwargs = post_process_settings or {}
+            processor = PostProcessor(**pp_kwargs)
+            original_audio_path = Path(audio_path)
+            processed_path = Path(processor.process(original_audio_path, on_progress=on_progress))
+            if processed_path.resolve(strict=False) != original_audio_path.resolve(strict=False):
+                audio_path = str(processed_path)
+                compressed_path = None  # Force re-compression of fully processed audio
+            else:
+                logger.info("Post-processing made no file changes; keeping existing compressed fallback")
+        except Exception:
+            logger.warning("Post-processing failed, falling back to parallel OGG", exc_info=True)
+            # compressed_path (parallel OGG with denoise+AGC) is the fallback
+
+    # Detect channel count for multichannel transcription
+    is_multichannel = False
     try:
-        from audio.normalizer import normalize_audio
-        if on_progress:
-            on_progress("Normalizing audio levels...")
-        normalize_audio(Path(audio_path))
+        import soundfile as sf
+        info = sf.info(audio_path)
+        is_multichannel = info.channels >= 2
     except Exception:
-        logger.debug("Audio normalization skipped", exc_info=True)
+        logger.debug("Could not detect channel count", exc_info=True)
 
     # Use pre-compressed file if available, otherwise compress now
     if compressed_path and Path(compressed_path).exists():
@@ -142,6 +166,13 @@ def transcribe_with_diarization(
         "speaker_labels": True,
         "speech_models": ["universal-3-pro", "universal-2"],
     }
+
+    # Multichannel: each channel transcribed separately (ch0=mic, ch1=loopback)
+    # Speaker diarization stays enabled so remote participants on the shared
+    # loopback channel can still be separated within that channel.
+    if is_multichannel:
+        config_kwargs["multichannel"] = True
+        logger.info("Using multichannel transcription (stereo)")
 
     config_kwargs["language_detection"] = True
 
@@ -182,28 +213,27 @@ def transcribe_with_diarization(
     if transcript.status == aai.TranscriptStatus.error:
         raise RuntimeError(f"Transcription failed: {transcript.error}")
 
-    # Clean up temporary compressed file (not the pre-compressed one from recorder)
-    if upload_path != audio_path and upload_path != compressed_path:
-        try:
-            Path(upload_path).unlink()
-        except OSError:
-            pass
-
     if on_progress:
         on_progress("Processing complete!")
 
     utterances = []
     if transcript.utterances:
         for u in transcript.utterances:
-            utterances.append({
+            entry = {
                 "speaker": u.speaker,
                 "text": u.text,
                 "start": u.start,
                 "end": u.end,
-            })
+            }
+            # Multichannel transcription includes channel info
+            channel = getattr(u, "channel", None)
+            if channel is not None:
+                entry["channel"] = channel
+            utterances.append(entry)
 
     return {
         "utterances": utterances,
         "full_text": transcript.text or "",
         "language": getattr(transcript, "language_code", "unknown"),
+        "audio_path": upload_path,  # Actual file used for upload (for Gemini cleanup)
     }

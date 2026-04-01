@@ -11,6 +11,16 @@ logger = logging.getLogger(__name__)
 _CHUNK_FRAMES = 64_000
 
 
+def _get_wav_format(path: Path) -> tuple[int, int, int]:
+    """Return (channels, sample_width, frame_rate) for a WAV file."""
+    with wave.open(str(path), "rb") as wav_file:
+        return (
+            wav_file.getnchannels(),
+            wav_file.getsampwidth(),
+            wav_file.getframerate(),
+        )
+
+
 def merge_wav_files(
     segments: list[Path],
     output_path: Optional[Path] = None,
@@ -18,7 +28,7 @@ def merge_wav_files(
 ) -> Path:
     """Merge multiple WAV segments into one file, inserting silence between them.
 
-    All segments must share the same format (16kHz, 16-bit PCM, mono).
+    All segments must share the same format (16kHz, 16-bit PCM).
 
     Args:
         segments: Ordered list of WAV file paths to merge.
@@ -38,10 +48,16 @@ def merge_wav_files(
         output_path = segments[0].parent / f"merged_{segments[0].stem}.wav"
 
     # Read format from first segment
-    with wave.open(str(segments[0]), "rb") as ref:
-        n_channels = ref.getnchannels()
-        sampwidth = ref.getsampwidth()
-        framerate = ref.getframerate()
+    n_channels, sampwidth, framerate = _get_wav_format(segments[0])
+
+    for seg_path in segments[1:]:
+        seg_format = _get_wav_format(seg_path)
+        if seg_format != (n_channels, sampwidth, framerate):
+            raise ValueError(
+                "Cannot merge WAV segments with different formats: "
+                f"{segments[0].name}={(n_channels, sampwidth, framerate)} "
+                f"but {seg_path.name}={seg_format}"
+            )
 
     silence_frames = int(framerate * silence_seconds)
     silence_bytes = b"\x00" * (silence_frames * n_channels * sampwidth)

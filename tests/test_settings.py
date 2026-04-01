@@ -12,6 +12,14 @@ class TestSettingsDefaults:
         assert s.auto_start_on_boot is False
         assert s.minimize_to_tray_on_close is True
         assert s.theme == "dark"
+        assert s.noise_suppression is True
+        assert s.agc is True
+        assert s.audio_transcript_cleanup_enabled is False
+        assert s.post_processing is False
+        assert s.echo_cancellation is False
+        assert s.post_noise_suppression is False
+        assert s.post_agc is False
+        assert s.post_normalize is False
         assert s.save_recordings is True
         assert s.audio_storage == "local"
         assert s.display_name == ""
@@ -37,6 +45,12 @@ class TestSettingsLoad:
         assert s.theme == "light"
         # Other fields keep defaults
         assert s.save_recordings is True
+        assert s.audio_transcript_cleanup_enabled is False
+        assert s.post_processing is False
+        assert s.echo_cancellation is False
+        assert s.post_noise_suppression is False
+        assert s.post_agc is False
+        assert s.post_normalize is False
 
     def test_load_ignores_unknown_fields(self, tmp_path):
         """Unknown keys in JSON should not cause errors."""
@@ -87,6 +101,12 @@ class TestSettingsSave:
             save_recordings=False,
             gemini_model="custom-model",
             company_context="Test context",
+            audio_transcript_cleanup_enabled=True,
+            post_processing=True,
+            echo_cancellation=True,
+            post_noise_suppression=True,
+            post_agc=True,
+            post_normalize=True,
         )
         original.save(path)
         loaded = Settings.load(path)
@@ -95,3 +115,9 @@ class TestSettingsSave:
         assert loaded.save_recordings == original.save_recordings
         assert loaded.gemini_model == original.gemini_model
         assert loaded.company_context == original.company_context
+        assert loaded.audio_transcript_cleanup_enabled == original.audio_transcript_cleanup_enabled
+        assert loaded.post_processing == original.post_processing
+        assert loaded.echo_cancellation == original.echo_cancellation
+        assert loaded.post_noise_suppression == original.post_noise_suppression
+        assert loaded.post_agc == original.post_agc
+        assert loaded.post_normalize == original.post_normalize

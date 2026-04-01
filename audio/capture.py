@@ -43,10 +43,9 @@ class AudioCapture(ABC):
         mic_device: Optional[AudioDevice],
         loopback_device: Optional[AudioDevice],
         on_audio_chunk: Callable[[bytes, bytes], None],
-        on_level_update: Callable[[float, float], None],
+        on_level_update: Callable[[float, float, float], None],
         sample_rate: int = 16000,
         noise_suppressor=None,
-        agc=None,
     ) -> None:
         """Start capturing audio.
 
@@ -54,10 +53,9 @@ class AudioCapture(ABC):
             mic_device: Microphone to capture from (None to skip).
             loopback_device: System audio loopback device (None to skip).
             on_audio_chunk: Callback with (mic_pcm_bytes, loopback_pcm_bytes).
-            on_level_update: Callback with (mic_rms_0to1, loopback_rms_0to1).
+            on_level_update: Callback with (mic_rms, sys_rms, raw_mic_rms). -1 = no update.
             sample_rate: Target sample rate (default 16kHz for AssemblyAI).
-            noise_suppressor: Optional NoiseSuppressor for mic audio.
-            agc: Optional AutomaticGainControl for mic audio.
+            noise_suppressor: Optional NoiseSuppressor for level monitoring.
         """
 
     @abstractmethod

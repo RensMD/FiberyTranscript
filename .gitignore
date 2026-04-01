@@ -38,6 +38,9 @@ logs/
 *.sqlite
 *.sqlite3
 *.db
+/codex_tmp/
+/review_tmp/
+/tmp*/
 
 # Local AI/tooling metadata
 .claude/

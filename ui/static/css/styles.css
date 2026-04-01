@@ -275,6 +275,12 @@ select.device-warning-yellow:focus {
     gap: 12px;
 }
 
+.audio-source-tools {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
 /* === Continue Recording banner (after sleep interruption) === */
 .continue-recording-banner {
     display: flex;
@@ -452,6 +458,7 @@ select.device-warning-yellow:focus {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    padding: 8px 0 8px;
 }
 
 .upload-btn {
@@ -825,6 +832,13 @@ textarea::placeholder {
     align-items: center;
     gap: 12px;
 }
+
+.summary-status-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
 .retry-row {
     display: flex;
     gap: 8px;
@@ -864,11 +878,26 @@ textarea::placeholder {
 }
 
 #summaryStatusBadge {
-    margin-left: auto;
+    flex: 1;
+    display: block;
+    min-width: 0;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    text-transform: none;
+    letter-spacing: 0;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
 }
 
 #summaryStatusBadge:empty {
     display: none;
+}
+
+#copySummaryStatusBtn {
+    flex-shrink: 0;
+    margin-top: 2px;
 }
 
 .small-btn {
@@ -1048,6 +1077,24 @@ textarea::placeholder {
     flex-direction: column;
     gap: 4px;
     margin-bottom: 10px;
+}
+
+.setting-note {
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+    margin-bottom: 12px;
+}
+
+.setting-subgroup {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    transition: opacity 0.15s ease;
+}
+
+.setting-subgroup.is-disabled {
+    opacity: 0.55;
 }
 
 .setting-row label {

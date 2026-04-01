@@ -17,9 +17,17 @@ class Settings:
     minimize_to_tray_on_close: bool = True
     theme: str = "dark"  # "light" or "dark"
 
-    # Audio processing
+    # Recording-time cleanup for the original OGG copy
     noise_suppression: bool = True
     agc: bool = True
+
+    # Post-processing before upload/transcription (opt-in)
+    audio_transcript_cleanup_enabled: bool = False
+    post_processing: bool = False
+    echo_cancellation: bool = False
+    post_noise_suppression: bool = False
+    post_agc: bool = False
+    post_normalize: bool = False
 
     # Recording
     save_recordings: bool = True

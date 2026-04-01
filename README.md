@@ -101,6 +101,7 @@ Deletes `dist/` and `build/output/` before rebuilding.
 | Theme | Dark | Light or dark UI |
 | Save recordings | On | Keep WAV/OGG files after transcription |
 | Recordings folder | `~/AppData/.../recordings` | Where audio files are saved |
+| Audio-supported transcript cleanup | Off | Use Gemini with the audio file to improve the AssemblyAI transcript |
 | Gemini Interview Model | `gemini-3.1-pro-preview` | Model used for interview summaries |
 | Gemini Meeting Model | `gemini-3-flash-preview` | Model used for meeting summaries |
 

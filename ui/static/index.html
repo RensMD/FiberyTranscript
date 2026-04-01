@@ -58,7 +58,7 @@
                     <div class="create-meeting-buttons">
                         <button class="create-meeting-btn" data-type="internal" disabled>Internal</button>
                         <button class="create-meeting-btn" data-type="external" disabled>External</button>
-                        <button class="create-meeting-btn" data-type="interview" disabled>Interview</button>
+                        <button class="create-meeting-btn" data-type="interview">Interview</button>
                     </div>
                 </div>
                 <!-- Disambiguation: shown when compound URL has two entity candidates -->
@@ -100,38 +100,40 @@
                 </button>
             </div>
             <div class="step-body">
-                <!-- Device row: Microphone -->
-                <div class="device-row">
-                    <div class="selector-group">
-                        <label for="micSelect">Microphone</label>
-                        <select id="micSelect">
-                            <option value="">-- Select Microphone --</option>
-                        </select>
+                <div class="audio-source-tools" id="audioSourceTools">
+                    <!-- Device row: Microphone -->
+                    <div class="device-row">
+                        <div class="selector-group">
+                            <label for="micSelect">Microphone</label>
+                            <select id="micSelect">
+                                <option value="">-- Select Microphone --</option>
+                            </select>
+                        </div>
+                        <div class="level-bar-container">
+                            <canvas id="micLevelCanvas" width="400" height="6"></canvas>
+                        </div>
                     </div>
-                    <div class="level-bar-container">
-                        <canvas id="micLevelCanvas" width="400" height="6"></canvas>
-                    </div>
-                </div>
 
-                <!-- Device row: System Audio -->
-                <div class="device-row">
-                    <div class="selector-group">
-                        <label for="loopbackSelect">Speaker</label>
-                        <select id="loopbackSelect">
-                            <option value="">-- Select Speaker --</option>
-                        </select>
+                    <!-- Device row: System Audio -->
+                    <div class="device-row">
+                        <div class="selector-group">
+                            <label for="loopbackSelect">Speaker</label>
+                            <select id="loopbackSelect">
+                                <option value="">-- Select Speaker --</option>
+                            </select>
+                        </div>
+                        <div class="level-bar-container">
+                            <canvas id="sysLevelCanvas" width="400" height="6"></canvas>
+                        </div>
                     </div>
-                    <div class="level-bar-container">
-                        <canvas id="sysLevelCanvas" width="400" height="6"></canvas>
-                    </div>
-                </div>
 
-                <!-- Audio Health Indicators (visible during recording) -->
-                <div class="audio-health hidden" id="audioHealth">
-                    <span class="health-badge" id="healthMic"><span class="health-dot green"></span> Mic active</span>
-                    <span class="health-badge" id="healthSys"><span class="health-dot green"></span> System active</span>
-                    <span class="health-badge hidden" id="healthClipping"><span class="health-dot red pulse"></span> Clipping!</span>
-                    <span class="health-badge hidden" id="healthSilence"><span class="health-dot gray"></span> <span id="healthSilenceText">No speech</span></span>
+                    <!-- Audio Health Indicators (visible during recording) -->
+                    <div class="audio-health hidden" id="audioHealth">
+                        <span class="health-badge" id="healthMic"><span class="health-dot green"></span> Mic active</span>
+                        <span class="health-badge" id="healthSys"><span class="health-dot green"></span> System active</span>
+                        <span class="health-badge hidden" id="healthClipping"><span class="health-dot red pulse"></span> Clipping!</span>
+                        <span class="health-badge hidden" id="healthSilence"><span class="health-dot gray"></span> <span id="healthSilenceText">No speech</span></span>
+                    </div>
                 </div>
 
                 <!-- Recording Controls -->
@@ -151,15 +153,15 @@
                 <!-- Audio Storage Toggle (hidden until meeting + recording) -->
                 <div class="collapsible collapsed" id="audioStorageCollapsible">
                     <div class="audio-storage-group" id="audioStorageGroup">
-                        <span class="audio-storage-label">Save audio to</span>
+                        <span class="audio-storage-label">Save to Fibery</span>
                         <div class="summary-style-options" role="radiogroup" aria-label="Audio storage">
                             <div class="summary-style-option">
                                 <input type="radio" id="storageLocal" name="audioStorage" value="local" checked>
-                                <label for="storageLocal">Locally</label>
+                                <label for="storageLocal">No</label>
                             </div>
                             <div class="summary-style-option">
                                 <input type="radio" id="storageFibery" name="audioStorage" value="fibery">
-                                <label for="storageFibery">Fibery</label>
+                                <label for="storageFibery">Yes</label>
                             </div>
                         </div>
                         <span class="audio-storage-hint" id="audioStorageHint"></span>
@@ -208,6 +210,19 @@
                                 </div>
                                 <button class="link-btn" id="clearUploadBtn">Clear</button>
                             </div>
+                            <div class="audio-storage-group hidden" id="uploadTranscriptMode">
+                                <span class="audio-storage-label">Transcript</span>
+                                <div class="summary-style-options" role="radiogroup" aria-label="Upload transcript mode">
+                                    <div class="summary-style-option">
+                                        <input type="radio" id="uploadModeAppend" name="uploadTranscriptMode" value="append" checked>
+                                        <label for="uploadModeAppend">Append</label>
+                                    </div>
+                                    <div class="summary-style-option">
+                                        <input type="radio" id="uploadModeReplace" name="uploadTranscriptMode" value="replace">
+                                        <label for="uploadModeReplace">Replace</label>
+                                    </div>
+                                </div>
+                            </div>
                             <button class="action-btn primary-btn hidden" id="transcribeBtn">Transcribe</button>
                         </div>
                     </div>
@@ -251,6 +266,19 @@
                             </div>
                         </div>
                     </div>
+                    <div class="summary-style-group">
+                        <span class="summary-style-label">Summary</span>
+                        <div class="summary-style-options" role="radiogroup" aria-label="Summary mode">
+                            <div class="summary-style-option">
+                                <input type="radio" id="summaryModeAppend" name="summaryMode" value="append" checked>
+                                <label for="summaryModeAppend">Append</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="radio" id="summaryModeReplace" name="summaryMode" value="replace">
+                                <label for="summaryModeReplace">Replace</label>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Action buttons (shown after processing completes) -->
@@ -261,7 +289,9 @@
                             <button class="link-btn" id="copyTranscriptBtn" title="Copy raw transcript">Copy Transcript</button>
                             <button class="link-btn" id="copySummaryBtn" title="Copy AI summary" disabled>Copy Summary</button>
                         </div>
-                        <span class="status-badge" id="summaryStatusBadge"></span>
+                    </div>
+                    <div class="summary-status-row hidden" id="summaryStatusRow">
+                        <div class="status-badge" id="summaryStatusBadge"></div>
                     </div>
                     <div class="retry-row hidden" id="retryRow">
                         <button class="action-btn small-btn" id="retryTranscriptBtn" style="display:none;">Retry Send Transcript</button>
@@ -298,16 +328,8 @@
                         <input type="checkbox" id="minimizeToTray" />
                     </div>
                     <div class="setting-row checkbox-row">
-                        <label for="saveRecordings">Save audio recordings</label>
+                        <label for="saveRecordings">Save all processed audio recordings</label>
                         <input type="checkbox" id="saveRecordings" checked />
-                    </div>
-                    <div class="setting-row checkbox-row">
-                        <label for="noiseSuppression">Noise suppression (mic)</label>
-                        <input type="checkbox" id="noiseSuppression" checked />
-                    </div>
-                    <div class="setting-row checkbox-row">
-                        <label for="agcEnabled">Auto gain control (mic)</label>
-                        <input type="checkbox" id="agcEnabled" checked />
                     </div>
                     <div class="setting-row" id="recordingsDirRow">
                         <label for="recordingsDir">Recordings folder</label>
@@ -317,10 +339,10 @@
                         </div>
                     </div>
                     <div class="setting-row">
-                        <label for="defaultAudioStorage">Default audio storage</label>
+                        <label for="defaultAudioStorage">Save audio file in Fibery</label>
                         <select id="defaultAudioStorage">
-                            <option value="local">Locally</option>
-                            <option value="fibery">Fibery</option>
+                            <option value="local">Local Only</option>
+                            <option value="fibery">Local + Fibery</option>
                         </select>
                     </div>
                     <div class="setting-row">
@@ -335,8 +357,50 @@
                         </select>
                     </div>
                     <div class="setting-row">
-                        <label for="displayName">Display Name</label>
-                        <input type="text" id="displayName" placeholder="Your name (for recording lock)" />
+                        <label for="displayName">Fibery username</label>
+                        <input type="text" id="displayName" placeholder="Your Fibery username (usually your first name)" />
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <h3>Live Recording Cleanup</h3>
+                    <p class="setting-note">Improves the audio file sent to the AI.</p>
+                    <div class="setting-row checkbox-row">
+                        <label for="noiseSuppression">Noise suppression (mic)</label>
+                        <input type="checkbox" id="noiseSuppression" checked />
+                    </div>
+                    <div class="setting-row checkbox-row">
+                        <label for="agcEnabled">Auto gain control (mic)</label>
+                        <input type="checkbox" id="agcEnabled" checked />
+                    </div>
+                </div>
+                <div class="setting-group">
+                    <h3>Extra Post-Processing</h3>
+                    <p class="setting-note">Optional cleanup steps after recording or uploading.</p>
+                    <div class="setting-row checkbox-row">
+                        <label for="audioTranscriptCleanupEnabled">Audio-based transcript cleanup</label>
+                        <input type="checkbox" id="audioTranscriptCleanupEnabled" />
+                    </div>
+                    <div class="setting-row checkbox-row">
+                        <label for="postProcessingEnabled">Enable audio post-processing, pick options below</label>
+                        <input type="checkbox" id="postProcessingEnabled" />
+                    </div>
+                    <div class="setting-subgroup" id="postProcessingOptions">
+                        <div class="setting-row checkbox-row">
+                            <label for="echoCancellationEnabled">Echo cancellation</label>
+                            <input type="checkbox" id="echoCancellationEnabled" />
+                        </div>
+                        <div class="setting-row checkbox-row">
+                            <label for="postNoiseSuppression">Noise suppression (mic)</label>
+                            <input type="checkbox" id="postNoiseSuppression" />
+                        </div>
+                        <div class="setting-row checkbox-row">
+                            <label for="postAgcEnabled">Auto gain control (mic)</label>
+                            <input type="checkbox" id="postAgcEnabled" />
+                        </div>
+                        <div class="setting-row checkbox-row">
+                            <label for="postNormalizeEnabled">Normalize levels</label>
+                            <input type="checkbox" id="postNormalizeEnabled" />
+                        </div>
                     </div>
                 </div>
                 <div class="setting-group">

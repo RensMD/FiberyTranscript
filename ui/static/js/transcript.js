@@ -18,7 +18,7 @@ class TranscriptManager {
         for (const u of utterances) {
             const label = document.createElement('span');
             label.className = 'speaker-label';
-            label.textContent = `Speaker ${u.speaker}`;
+            label.textContent = this._formatSpeakerLabel(u);
             this.container.appendChild(label);
 
             const text = document.createElement('p');
@@ -26,6 +26,13 @@ class TranscriptManager {
             text.textContent = u.text;
             this.container.appendChild(text);
         }
+    }
+
+    _formatSpeakerLabel(utterance) {
+        if (utterance.channel === undefined || utterance.channel === null) {
+            return `Speaker ${utterance.speaker}`;
+        }
+        return `Speaker ${utterance.speaker} (Channel ${utterance.channel})`;
     }
 
     /**

@@ -4,8 +4,12 @@ import logging
 import sys
 from pathlib import Path
 
+from config.constants import (
+    APP_AUTOSTART_REG_VALUE,
+    APP_LEGACY_AUTOSTART_REG_VALUES,
+    APP_NAME,
+)
 from utils.platform_utils import get_platform
-from config.constants import APP_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -34,18 +38,35 @@ def _autostart_windows(enabled: bool) -> bool:
 
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
-        if enabled:
-            winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}"')
-        else:
-            try:
-                winreg.DeleteValue(key, APP_NAME)
-            except FileNotFoundError:
-                pass
-        winreg.CloseKey(key)
+        try:
+            _remove_windows_autostart_values(winreg, key)
+            if enabled:
+                winreg.SetValueEx(
+                    key,
+                    APP_AUTOSTART_REG_VALUE,
+                    0,
+                    winreg.REG_SZ,
+                    f'"{exe_path}"',
+                )
+        finally:
+            winreg.CloseKey(key)
         return True
     except Exception as e:
         logger.error("Registry autostart error: %s", e)
         return False
+
+
+def _windows_autostart_value_names() -> tuple[str, ...]:
+    names = [APP_AUTOSTART_REG_VALUE, *APP_LEGACY_AUTOSTART_REG_VALUES]
+    return tuple(dict.fromkeys(names))
+
+
+def _remove_windows_autostart_values(winreg, key) -> None:
+    for name in _windows_autostart_value_names():
+        try:
+            winreg.DeleteValue(key, name)
+        except FileNotFoundError:
+            pass
 
 
 def _autostart_macos(enabled: bool) -> bool:

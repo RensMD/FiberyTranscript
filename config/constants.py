@@ -1,7 +1,11 @@
 """Application constants and prompt templates."""
 
 APP_NAME = "Fibery Transcript"
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.4.0"
+APP_WINDOW_TITLE = "FiberyTranscript"
+APP_AUTOSTART_REG_VALUE = "FiberyTranscript"
+APP_LEGACY_AUTOSTART_REG_VALUES = ("Fibery Transcript",)
+APP_SINGLE_INSTANCE_MUTEX_NAME = r"Local\FiberyTranscript.SingleInstance"
 
 _DEFAULT_FIBERY_INSTANCE_URL = "https://your-workspace.fibery.io"
 _DEFAULT_COMPANY_CONTEXT = """Add your internal company context here to improve name disambiguation.
@@ -52,7 +56,7 @@ FIBERY_API_PATH = "/api/commands"
 
 # Default meeting prompt (overwritten when user provides a custom prompt)
 DEFAULT_MEETING_PROMPT = """You are a professional meeting summarizer.\
-    Keep the summary clear, professional, and focused on the topic at hand."""
+    Keep the summary clear, professional, and on topic."""
 
 # Interview prompt (switched to when interview mode is selected)
 DEFAULT_INTERVIEW_PROMPT = """You are a professional interview summarizer. Your task is to analyze the \
@@ -61,7 +65,7 @@ Keep the summary clear, professional, and focused on the following topics: \
 JOB TO BE DONE, ACTIVITIES, PROBLEMS, SEARCH FOR ALTERNATIVES, CONSIDERATIONS, ALTERNATIVES, COMPLAINTS. \
 At the end of your summary, please create a list of problem definition suggestions \
 (depending on the interview create between zero and six definitions. Please create a separate \
-definition per problem, no mixing of problems.) Follow this template:
+definition per problem, no mixing of problems.) Follow this template exactly:
 
 **We believe that:** [Market Segment]
 **Struggle with:** [Problem]
@@ -73,33 +77,33 @@ definition per problem, no mixing of problems.) Follow this template:
 **They are searching for alternatives by:** [Search approach]"""
 
 # Core prompt (always included, cannot be changed by user)
-CORE_PROMPT = """Your task is to analyze the provided user notes and auto generated transcript. \
+CORE_PROMPT = """Your task is to analyze the provided user notes and auto-generated transcript. \
 The speakers in the meeting are non English natives (mostly Dutch). The transcript likely contains small talk, \
-misheard words, grammar errors, and mistakes with names; use the meeting context provided to resolve name ambiguities. \
-The provided notes are written on the fly by a meeting participant, and may be incomplete, unstructured, or contain errors."""
+misheard words, grammar errors, and mistakes with names; use the meeting context provided to resolve naming ambiguities. \
+The provided notes are written on the fly by meeting participants and may be incomplete, unstructured, or contain errors."""
 
 # Transcript cleanup prompt (used by Gemini to clean up raw AssemblyAI output)
 TRANSCRIPT_CLEANUP_PROMPT = """You are a transcript checker. Your task is to clean up \
-an auto-generated meeting transcript. Remove filler words. Use the meeting context to resolve name ambiguities and fix obvious transcription errors. \
-
-Instructions:
-- Identify speakers by name using the meeting context below. Replace generic \
-"Speaker A/B/C" labels with real names where you can confidently identify them. \
-If uncertain about a speaker's identity, use a descriptive label like \
-"[Internal participant]" or "[External participant]".
+an auto-generated meeting transcript. Remove filler words. Use the meeting context to resolve name ambiguities \
+and fix obvious transcription errors. Instructions:
+- Keep the original language. Do NOT translate.
+- When possible, identify speakers by name using the meeting context. Replace generic \
+labels with real names where you can confidently identify them. \
+If uncertain about a speaker's identity, keep the label generic but consistent. 
+- Format speaker label as **Name:** on its own line, followed by the text.
 - Fix obvious transcription errors: broken sentences, misheard words, grammar issues.
-- Keep the transcript in its original language. Do NOT translate.
+- No Yeah, Uh, Um, Like, You know, or lonely "and" or similar filler words. Remove them entirely.
 - Preserve the original meaning do not add, remove, or change what was said.
 - Split the transcript into a few broad thematic sections with short bold headers only.
-- Keep the speaker label format as **Name:** on its own line, followed by their text.
 - No em-dashes.
-- No Yeah, Uh, Um, Like, You know, or lonely "and" or similar filler words. Remove them entirely."""
+- DO NOT TRANSLATE DUTCH"""
 
 # Audio-assisted variant: appended when the recording audio is also provided
 TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM = """
-The original meeting audio is attached. Do NOT re-transcribe from scratch; improve the provided transcript. Use it to:
+The original meeting audio is attached. Do NOT re-transcribe from scratch; improve the provided transcript only. Use it to:
 - Verify and correct words that the automatic transcription may have misheard, \
 especially names, technical terms, and non-English words.
-- Resolve speaker identification where the text alone is ambiguous — listen for \
-voice differences to confirm who is speaking.
+- Resolve speaker identification where the text alone is ambiguous. Listen for \
+voice differences to confirm who is speaking. 
+- DO NOT TRANSLATE
 """

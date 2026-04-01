@@ -1,6 +1,15 @@
 """Format transcripts for display and export."""
 
 
+def _speaker_label(utterance: dict) -> str:
+    """Build a stable display label for a diarized utterance."""
+    speaker = utterance.get("speaker", "?")
+    channel = utterance.get("channel")
+    if channel is None:
+        return f"Speaker {speaker}"
+    return f"Speaker {speaker} (Channel {channel})"
+
+
 def format_diarized_transcript(utterances: list[dict]) -> str:
     """Format diarized utterances into readable markdown text.
 
@@ -14,17 +23,17 @@ def format_diarized_transcript(utterances: list[dict]) -> str:
         return ""
 
     lines = []
-    current_speaker = None
+    current_speaker_label = None
 
     for u in utterances:
-        speaker = u.get("speaker", "?")
+        speaker_label = _speaker_label(u)
         text = u.get("text", "").strip()
         if not text:
             continue
 
-        if speaker != current_speaker:
-            current_speaker = speaker
-            lines.append(f"\n**Speaker {speaker}**")
+        if speaker_label != current_speaker_label:
+            current_speaker_label = speaker_label
+            lines.append(f"\n**{speaker_label}**")
 
         lines.append(text)
 
@@ -45,9 +54,9 @@ def format_plain_transcript(utterances: list[dict]) -> str:
 
     lines = []
     for u in utterances:
-        speaker = u.get("speaker", "?")
+        speaker_label = _speaker_label(u)
         text = u.get("text", "").strip()
         if text:
-            lines.append(f"Speaker {speaker}: {text}")
+            lines.append(f"{speaker_label}: {text}")
 
     return "\n".join(lines)

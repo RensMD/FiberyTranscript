@@ -7,10 +7,10 @@ and integrates with Fibery.io for meeting summarization.
 
 import logging
 import sys
-from pathlib import Path
 
 if sys.platform == "win32":
     import ctypes
+
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("com.fiberytranscript.app")
 
 from app import FiberyTranscriptApp
@@ -19,6 +19,7 @@ from ui.api_bridge import ApiBridge
 from ui.window import create_window, start_webview
 from utils.logging_config import setup_logging
 from utils.platform_utils import get_data_dir
+from utils.single_instance import acquire_single_instance_guard
 
 
 def main():
@@ -30,89 +31,105 @@ def main():
     logger.info("Fibery Transcript starting...")
     logger.info("Data directory: %s", data_dir)
 
-    # Load settings
-    settings_path = data_dir / "settings.json"
-    settings = Settings.load(settings_path)
+    instance_guard = acquire_single_instance_guard()
+    if instance_guard is None:
+        logger.info("Duplicate launch detected; exiting without starting a second instance")
+        return
 
-    # Merge installer preferences (written by the Windows installer on install/upgrade)
-    if settings.merge_installer_prefs(data_dir):
-        logger.info("Merged installer preferences into settings")
-        settings.save(settings_path)
+    try:
+        # Load settings
+        settings_path = data_dir / "settings.json"
+        settings = Settings.load(settings_path)
 
-    # Create app
-    app = FiberyTranscriptApp(settings, data_dir)
+        # Merge installer preferences (written by the Windows installer on install/upgrade)
+        if settings.merge_installer_prefs(data_dir):
+            logger.info("Merged installer preferences into settings")
+            settings.save(settings_path)
 
-    # Create API bridge
-    bridge = ApiBridge(app)
+        # Create app
+        app = FiberyTranscriptApp(settings, data_dir)
 
-    # Create window
-    window = create_window(bridge, confirm_close=False)
-    app.window = window
+        # Create API bridge
+        bridge = ApiBridge(app)
 
-    # Create entity side panel (attached to main window)
-    from ui.entity_panel import EntityPanel
-    app.entity_panel = EntityPanel(window, settings=app.settings)
+        # Create window
+        window = create_window(bridge, confirm_close=False)
+        app.window = window
 
-    # Start power monitoring for sleep/wake detection
-    from utils.power_monitor import create_power_monitor
-    power_monitor = create_power_monitor(
-        on_sleep=app.on_system_sleep,
-        on_wake=app.on_system_wake,
-    )
-    if power_monitor:
-        power_monitor.start()
-        app._power_monitor = power_monitor
+        # Create entity side panel (attached to main window)
+        from ui.entity_panel import EntityPanel
 
-    def _on_closing():
-        """Conditionally show quit confirmation, or minimize to tray."""
-        # Consume the tray-quit flag so it doesn't persist after a cancelled dialog
-        tray_quit = getattr(app, '_tray_quit_requested', False)
-        app._tray_quit_requested = False
+        app.entity_panel = EntityPanel(window, settings=app.settings)
 
-        # Minimize to tray instead of closing, unless shutting down or tray-quit
-        if app.settings.minimize_to_tray_on_close and not app._is_shutting_down and not tray_quit:
-            window.hide()
-            return False  # Prevent window destruction
+        # Start power monitoring for sleep/wake detection
+        from utils.power_monitor import create_power_monitor
 
-        if app.needs_close_confirmation:
-            # Enable the native confirm dialog; pywebview checks this
-            # right after the closing event, so toggling it here works.
-            # Do NOT begin_shutdown yet — user may cancel the dialog.
-            window.confirm_close = True
-            return  # begin_shutdown will run in _on_closed
-        window.confirm_close = False
+        power_monitor = create_power_monitor(
+            on_sleep=app.on_system_sleep,
+            on_wake=app.on_system_wake,
+        )
+        if power_monitor:
+            power_monitor.start()
+            app._power_monitor = power_monitor
+
+        def _on_closing():
+            """Conditionally show quit confirmation, or minimize to tray."""
+            # Consume the tray-quit flag so it does not persist after a cancelled dialog
+            tray_quit = getattr(app, "_tray_quit_requested", False)
+            app._tray_quit_requested = False
+
+            # Minimize to tray instead of closing, unless shutting down or tray-quit
+            if (
+                app.settings.minimize_to_tray_on_close
+                and not app._is_shutting_down
+                and not tray_quit
+            ):
+                window.hide()
+                return False  # Prevent window destruction
+
+            if app.needs_close_confirmation:
+                # Enable the native confirm dialog; pywebview checks this
+                # right after the closing event, so toggling it here works.
+                # Do not begin shutdown yet - user may cancel the dialog.
+                window.confirm_close = True
+                return  # begin_shutdown will run in _on_closed
+            window.confirm_close = False
+            app.begin_shutdown()
+
+        def _on_closed():
+            """Ensure cleanup runs after the window is actually closed."""
+            app.begin_shutdown()
+
+        window.events.closing += _on_closing
+        window.events.closed += _on_closed
+
+        # Set up system tray (optional, in background)
+        _setup_tray(app, window)
+
+        # Start webview event loop (blocks until window closes)
+        logger.info("Starting UI...")
+        debug = "--debug" in sys.argv
+        start_webview(debug=debug)
+
+        # Ensure cleanup ran (begin_shutdown is also called by the closing event,
+        # but call again in case the window was destroyed without firing it).
         app.begin_shutdown()
+        app.stop_background_scanning()
 
-    def _on_closed():
-        """Ensure cleanup runs after the window is actually closed."""
-        app.begin_shutdown()
+        logger.info("FiberyTranscript exiting.")
 
-    window.events.closing += _on_closing
-    window.events.closed += _on_closed
+        # Force-exit to avoid pythonnet finalizer crash on Windows.
+        # All cleanup has already run above; the .NET runtime's finalizer thread
+        # can race against Python interpreter teardown, causing a harmless but
+        # noisy NullReferenceException. os._exit() skips atexit handlers and
+        # finalizers, preventing the crash.
+        if sys.platform == "win32":
+            import os
 
-    # Set up system tray (optional, in background)
-    _setup_tray(app, window)
-
-    # Start webview event loop (blocks until window closes)
-    logger.info("Starting UI...")
-    debug = "--debug" in sys.argv
-    start_webview(debug=debug)
-
-    # Ensure cleanup ran (begin_shutdown is also called by the closing event,
-    # but call again in case the window was destroyed without firing it).
-    app.begin_shutdown()
-    app.stop_background_scanning()
-
-    logger.info("FiberyTranscript exiting.")
-
-    # Force-exit to avoid pythonnet finalizer crash on Windows.
-    # All cleanup has already run above; the .NET runtime's finalizer thread
-    # can race against Python interpreter teardown, causing a harmless but
-    # noisy NullReferenceException.  os._exit() skips atexit handlers and
-    # finalizers, preventing the crash.
-    if sys.platform == "win32":
-        import os
-        os._exit(0)
+            instance_guard.release()
+            os._exit(0)
+    finally:
+        instance_guard.release()
 
 
 def _setup_tray(app, window):
@@ -127,7 +144,7 @@ def _setup_tray(app, window):
         def on_quit():
             # Set flag so _on_closing() bypasses minimize-to-tray.
             # The flag is consumed (cleared) inside _on_closing() so it
-            # doesn't persist if the user cancels a confirmation dialog.
+            # does not persist if the user cancels a confirmation dialog.
             app._tray_quit_requested = True
 
             if app.needs_close_confirmation:
@@ -146,7 +163,7 @@ def _setup_tray(app, window):
             if app.state == FiberyTranscriptApp.STATE_RECORDING:
                 app.stop_recording()
             else:
-                # Can't start from tray without device selection
+                # Can not start from tray without device selection
                 window.show()
                 window.restore()
 
