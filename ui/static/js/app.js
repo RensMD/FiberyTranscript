@@ -36,6 +36,8 @@ let generatedSummary = '';        // cached summary text from last successful su
 let linkedTranscriptText = '';    // transcript pulled from the linked Fibery meeting
 let selectedUploadPath = null;    // path to browsed audio file
 let currentEntityDb = '';         // entity database name (for Files support check)
+let summarizeInProgress = false;  // true while Gemini summary is running
+let summarizeRetryPending = false;
 
 // --- DOM elements ---
 const recordBtn = document.getElementById('recordBtn');
@@ -652,13 +654,26 @@ function updateSummaryActionsState(scrollIntoView = false) {
     sendActions.classList.toggle('visible', shouldShowActions);
 
     const hasTranscript = hasEffectiveTranscript();
-    summarizeBtn.disabled = !hasTranscript;
+    applySummarizeButtonState(hasTranscript);
     copyTranscriptBtn.disabled = !hasTranscript;
     copySummaryBtn.disabled = !generatedSummary;
 
     if (shouldShowActions && scrollIntoView) {
         sendActions.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
+}
+
+function applySummarizeButtonState(hasTranscript = hasEffectiveTranscript()) {
+    summarizeBtn.classList.toggle('processing', summarizeInProgress);
+
+    if (summarizeInProgress) {
+        summarizeBtn.disabled = true;
+        summarizeBtn.textContent = 'Summarizing...';
+        return;
+    }
+
+    summarizeBtn.disabled = !hasTranscript;
+    summarizeBtn.textContent = summarizeRetryPending ? 'Retry Summary' : 'Summarize';
 }
 
 function applyLinkedEntity(result, entityUrl) {
@@ -932,7 +947,9 @@ async function resetSession() {
     setFiberyStatus('', '');
     copySummaryBtn.disabled = true;
     copyTranscriptBtn.disabled = true;
-    summarizeBtn.textContent = 'Summarize';
+    summarizeInProgress = false;
+    summarizeRetryPending = false;
+    applySummarizeButtonState(false);
     retryTranscriptBtn.style.display = 'none';
     retryAudioUploadBtn.style.display = 'none';
     retryRow.classList.add('hidden');
@@ -1452,7 +1469,9 @@ summarizeBtn.addEventListener('click', async () => {
         return;
     }
 
-    summarizeBtn.disabled = true;
+    summarizeInProgress = true;
+    summarizeRetryPending = false;
+    applySummarizeButtonState(true);
     setFiberyStatus('Summarizing...', '');
 
     try {
@@ -1461,16 +1480,18 @@ summarizeBtn.addEventListener('click', async () => {
         // Returns immediately — result arrives via onSummarizeComplete/onSummarizeError
         await window.pywebview.api.generate_summary(customPrompt, summaryStyle);
     } catch (err) {
+        summarizeInProgress = false;
+        summarizeRetryPending = true;
         setFiberyStatus('Error: ' + err, 'error');
-        summarizeBtn.disabled = false;
+        updateSummaryActionsState();
     }
 });
 
 window.onSummarizeComplete = function(result) {
+    summarizeInProgress = false;
+    summarizeRetryPending = false;
     generatedSummary = (result && result.summary) ? result.summary : '';
     copySummaryBtn.disabled = !generatedSummary;
-    summarizeBtn.disabled = false;
-    summarizeBtn.textContent = 'Summarize';
 
     if (result && result.sent_to_fibery) {
         setFiberyStatus('Updated in Fibery', 'success');
@@ -1484,9 +1505,9 @@ window.onSummarizeComplete = function(result) {
 };
 
 window.onSummarizeError = function(message) {
+    summarizeInProgress = false;
+    summarizeRetryPending = true;
     setFiberyStatus('Error: ' + message, 'error');
-    summarizeBtn.disabled = false;
-    summarizeBtn.textContent = 'Retry Summary';
     updateSummaryActionsState();
 };
 
@@ -1503,9 +1524,11 @@ function setFiberyStatus(text, type) {
     summaryStatusBadge.textContent = text || '';
     summaryStatusBadge.className = 'status-badge' + (type ? ' ' + type : '');
     const hasText = Boolean(text);
-    copySummaryStatusBtn.textContent = 'Copy Status';
     summaryStatusRow.classList.toggle('hidden', !hasText);
-    copySummaryStatusBtn.classList.toggle('hidden', !hasText);
+    if (copySummaryStatusBtn) {
+        copySummaryStatusBtn.textContent = 'Copy Status';
+        copySummaryStatusBtn.classList.toggle('hidden', !hasText);
+    }
 }
 
 // === Retry Handlers ===
@@ -1570,15 +1593,17 @@ copySummaryBtn.addEventListener('click', () => {
     }
 });
 
-copySummaryStatusBtn.addEventListener('click', () => {
-    const statusText = summaryStatusBadge.textContent;
-    if (statusText) {
-        navigator.clipboard.writeText(statusText).then(() => {
-            copySummaryStatusBtn.textContent = 'Copied!';
-            setTimeout(() => { copySummaryStatusBtn.textContent = 'Copy Status'; }, 2000);
-        });
-    }
-});
+if (copySummaryStatusBtn) {
+    copySummaryStatusBtn.addEventListener('click', () => {
+        const statusText = summaryStatusBadge.textContent;
+        if (statusText) {
+            navigator.clipboard.writeText(statusText).then(() => {
+                copySummaryStatusBtn.textContent = 'Copied!';
+                setTimeout(() => { copySummaryStatusBtn.textContent = 'Copy Status'; }, 2000);
+            });
+        }
+    });
+}
 
 // === On-Demand Device Refresh ===
 async function refreshDeviceList() {

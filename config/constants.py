@@ -1,7 +1,7 @@
 """Application constants and prompt templates."""
 
 APP_NAME = "Fibery Transcript"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 APP_WINDOW_TITLE = "FiberyTranscript"
 APP_AUTOSTART_REG_VALUE = "FiberyTranscript"
 APP_LEGACY_AUTOSTART_REG_VALUES = ("Fibery Transcript",)

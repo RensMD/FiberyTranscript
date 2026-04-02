@@ -247,10 +247,10 @@ Function ConfigPageCreate
     Pop $TxtName
 
     ; --- Save location ---
-    ${NSD_CreateLabel} 0 38u 100% 12u "Default save location for transcripts and summaries:"
+    ${NSD_CreateLabel} 0 38u 100% 12u "Save audio files to Fibery by default:"
     Pop $LblStorage
 
-    ${NSD_CreateRadioButton} 0 52u 30% 12u "Fibery"
+    ${NSD_CreateRadioButton} 0 52u 30% 12u "Local + Fibery"
     Pop $RadioFibery
     ${NSD_CreateRadioButton} 32% 52u 30% 12u "Local only"
     Pop $RadioLocal

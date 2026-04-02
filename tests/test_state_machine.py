@@ -495,6 +495,33 @@ class TestUploadedArtifactCleanup:
             shutil.rmtree(root, ignore_errors=True)
 
 
+class TestRecordedArtifactCleanup:
+    def test_cleanup_recorded_audio_sidecars_keeps_raw_wav(self):
+        root = _make_test_root("test_recorded_artifact_cleanup")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            source = root / "recordings" / "meeting.wav"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"wav")
+
+            generated = [
+                source.with_suffix(".ogg"),
+                source.with_suffix(".flac"),
+                source.parent / "meeting_processed.ogg",
+                source.parent / "meeting_processed.flac",
+            ]
+            for artifact in generated:
+                artifact.write_bytes(b"generated")
+
+            app._cleanup_recorded_audio_sidecars(str(source), str(generated[-1]))
+
+            assert source.exists()
+            for artifact in generated:
+                assert not artifact.exists()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class TestRecordingBackgroundScanning:
     def test_start_recording_stops_background_scanning_before_capture(self):
         root = _make_test_root("test_start_recording_stops_background_scan")
@@ -629,6 +656,108 @@ class TestRecordingBackgroundScanning:
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_batch_processing_removes_recorded_sidecars_when_save_recordings_off(self):
+        root = _make_test_root("test_batch_processing_removes_recorded_sidecars")
+        try:
+            wav_path = root / "meeting.wav"
+            wav_path.write_bytes(b"wav")
+            raw_ogg = wav_path.with_suffix(".ogg")
+            raw_flac = wav_path.with_suffix(".flac")
+            processed_wav = wav_path.parent / "meeting_processed.wav"
+            processed_ogg = wav_path.parent / "meeting_processed.ogg"
+            processed_flac = wav_path.parent / "meeting_processed.flac"
+            for artifact in (raw_ogg, raw_flac, processed_wav, processed_ogg, processed_flac):
+                artifact.write_bytes(b"artifact")
+
+            app = _make_app(
+                settings=Settings(
+                    display_name="Test",
+                    save_recordings=False,
+                    audio_storage="fibery",
+                ),
+                data_dir=root / "appdata",
+            )
+            app.state = app.STATE_PROCESSING
+            app.start_background_scanning = MagicMock()
+            app._notify_js = MagicMock()
+            app._upload_audio_to_fibery = MagicMock(return_value=True)
+            session = RecordingSession(
+                SessionContext(
+                    wav_path=str(wav_path),
+                    compressed_path=str(raw_ogg),
+                )
+            )
+            result = {
+                "utterances": [{"speaker": "A", "text": "Hello", "start": 0, "end": 1000}],
+                "full_text": "Hello",
+                "language": "en",
+                "audio_path": str(processed_ogg),
+            }
+
+            with patch("app.get_key", side_effect=lambda key: "assembly-key" if key == "assemblyai_api_key" else ""):
+                with patch("transcription.batch.transcribe_with_diarization", return_value=result):
+                    app._run_batch_processing(session)
+
+            assert wav_path.exists()
+            for artifact in (raw_ogg, raw_flac, processed_wav, processed_ogg, processed_flac):
+                assert not artifact.exists()
+            app._upload_audio_to_fibery.assert_called_once()
+            assert app._upload_audio_to_fibery.call_args.args[0] == str(wav_path)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_batch_processing_keeps_recorded_sidecars_when_save_recordings_on(self):
+        root = _make_test_root("test_batch_processing_keeps_recorded_sidecars")
+        try:
+            wav_path = root / "meeting.wav"
+            wav_path.write_bytes(b"wav")
+            raw_ogg = wav_path.with_suffix(".ogg")
+            raw_flac = wav_path.with_suffix(".flac")
+            processed_wav = wav_path.parent / "meeting_processed.wav"
+            processed_ogg = wav_path.parent / "meeting_processed.ogg"
+            processed_flac = wav_path.parent / "meeting_processed.flac"
+            for artifact in (raw_ogg, raw_flac, processed_wav, processed_ogg, processed_flac):
+                artifact.write_bytes(b"artifact")
+
+            app = _make_app(
+                settings=Settings(
+                    display_name="Test",
+                    save_recordings=True,
+                    audio_storage="fibery",
+                ),
+                data_dir=root / "appdata",
+            )
+            app.state = app.STATE_PROCESSING
+            app.start_background_scanning = MagicMock()
+            app._notify_js = MagicMock()
+            app._upload_audio_to_fibery = MagicMock(return_value=True)
+            session = RecordingSession(
+                SessionContext(
+                    wav_path=str(wav_path),
+                    compressed_path=str(raw_ogg),
+                )
+            )
+            result = {
+                "utterances": [{"speaker": "A", "text": "Hello", "start": 0, "end": 1000}],
+                "full_text": "Hello",
+                "language": "en",
+                "audio_path": str(processed_ogg),
+            }
+
+            with patch("app.get_key", side_effect=lambda key: "assembly-key" if key == "assemblyai_api_key" else ""):
+                with patch("transcription.batch.transcribe_with_diarization", return_value=result):
+                    app._run_batch_processing(session)
+
+            assert wav_path.exists()
+            assert raw_ogg.exists()
+            assert raw_flac.exists()
+            assert processed_ogg.exists()
+            assert processed_flac.exists()
+            assert not processed_wav.exists()
+            app._upload_audio_to_fibery.assert_called_once()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_stop_recording_releases_lock_after_local_capture_stops(self):
         root = _make_test_root("test_stop_recording_releases_lock_after_capture")
         try:
@@ -671,6 +800,7 @@ class TestRecordingBackgroundScanning:
             app = _make_app(data_dir=root / "appdata")
             wav_path = root / "market-interview.wav"
             wav_path.write_bytes(b"fake wav data")
+            wav_path.with_suffix(".ogg").write_bytes(b"fake ogg data")
             app._notify_js = MagicMock()
 
             entity = SimpleNamespace(
@@ -696,5 +826,6 @@ class TestRecordingBackgroundScanning:
             client.entity_supports_files.assert_called_once_with(entity)
             client.upload_file.assert_called_once_with(wav_path)
             client.attach_file_to_entity.assert_called_once_with(entity, "file-uuid")
+            assert wav_path.exists()
         finally:
             shutil.rmtree(root, ignore_errors=True)

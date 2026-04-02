@@ -1859,26 +1859,10 @@ class FiberyTranscriptApp:
             if ctx.is_uploaded_file and not self.settings.save_recordings:
                 self._cleanup_uploaded_audio_artifacts(wav_path, uploaded_audio_path)
 
-            # Clean up local recordings if user opted out of local storage
-            # SAFETY: only delete if no Fibery upload was attempted, or if it succeeded.
-            # Otherwise the user would lose their recording with no backup anywhere.
-            fibery_upload_attempted = self.settings.audio_storage == "fibery"
-            safe_to_delete = not fibery_upload_attempted or audio_upload_ok
-            if not ctx.is_uploaded_file and not self.settings.save_recordings and safe_to_delete:
-                wav = Path(wav_path)
-                candidates = [
-                    wav,
-                    wav.with_suffix('.ogg'),
-                    wav.parent / f"{wav.stem}_processed.ogg",
-                    wav.parent / f"{wav.stem}_processed.flac",
-                ]
-                for f in candidates:
-                    if f.exists():
-                        try:
-                            f.unlink()
-                            logger.info("Cleaned up local recording: %s", f.name)
-                        except OSError as e:
-                            logger.warning("Could not delete %s: %s", f.name, e)
+            # Recorded sessions always keep the raw WAV locally.
+            # When sidecar saving is off, remove generated compressed artifacts only.
+            if not ctx.is_uploaded_file and not self.settings.save_recordings:
+                self._cleanup_recorded_audio_sidecars(wav_path, uploaded_audio_path)
 
             logger.info("Batch processing complete: %d utterances", len(result["utterances"]))
 
@@ -1902,8 +1886,6 @@ class FiberyTranscriptApp:
         # Use session context if available (prevents entity-swap bug)
         entity = session.context.entity if session else self._validated_entity
         client = session.context.fibery_client if session else self._fibery_client
-        is_uploaded_file = session.context.is_uploaded_file if session else False
-
         def _stale():
             return session_token is not None and self._session_token != session_token
 
@@ -1933,16 +1915,6 @@ class FiberyTranscriptApp:
             logger.info("Audio file uploaded to Fibery: %s", file_path.name)
             if not _stale():
                 self._notify_js("window.onAudioUploadedToFibery()")
-
-            # Cleanup: for recorded files (not browsed), delete WAV, keep OGG
-            if not is_uploaded_file:
-                ogg_path = file_path.with_suffix(".ogg")
-                if ogg_path.exists() and file_path.suffix.lower() == ".wav":
-                    try:
-                        file_path.unlink()
-                        logger.info("Deleted local WAV after Fibery upload: %s", file_path.name)
-                    except OSError as e:
-                        logger.warning("Could not delete WAV: %s", e)
 
             return True
 
@@ -2022,6 +1994,29 @@ class FiberyTranscriptApp:
             try:
                 candidate.unlink()
                 logger.info("Cleaned up uploaded-audio artifact: %s", candidate.name)
+            except OSError as e:
+                logger.warning("Could not delete %s: %s", candidate.name, e)
+
+    def _cleanup_recorded_audio_sidecars(self, wav_path: str, actual_audio_path: str = "") -> None:
+        """Remove generated OGG/FLAC sidecars for recorded audio while keeping the raw WAV."""
+        source = Path(wav_path)
+        candidates: set[Path] = set()
+
+        for ext in (".ogg", ".flac"):
+            candidates.add(source.with_suffix(ext))
+            candidates.add(source.parent / f"{source.stem}_processed{ext}")
+
+        if actual_audio_path:
+            actual = Path(actual_audio_path)
+            if actual != source and actual.suffix.lower() != ".wav":
+                candidates.add(actual)
+
+        for candidate in candidates:
+            if not candidate.exists():
+                continue
+            try:
+                candidate.unlink()
+                logger.info("Cleaned up recorded-audio sidecar: %s", candidate.name)
             except OSError as e:
                 logger.warning("Could not delete %s: %s", candidate.name, e)
 
