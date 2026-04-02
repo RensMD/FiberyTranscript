@@ -27,6 +27,7 @@ fibery-transcript = "main:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "--basetemp=codex_tmp/pytest_basetemp -p no:cacheprovider"
 tmp_path_retention_policy = "none"
 
 [build-system]

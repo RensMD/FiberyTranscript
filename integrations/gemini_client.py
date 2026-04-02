@@ -12,6 +12,7 @@ from config.constants import (
     TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM,
     TRANSCRIPT_CLEANUP_PROMPT,
 )
+from config.settings import DEFAULT_CLEANUP_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,10 @@ _FILE_DELETE_TIMEOUT_MS = 10_000
 
 SUMMARY_STYLE_INSTRUCTIONS = {
     "normal": " ",
-    "short": "The user wants an extra concise result, so limit your output (keep only key information).",
+    "short": (
+        "Use a genuinely short summary. Keep it under about 900 characters unless a critical detail "
+        "would otherwise be lost. Omit routine background, filler, repetition, and long examples."
+    ),
     "minimal": "Use minimal output: 3-5 short bullets with only critical outcomes.",
 }
 
@@ -141,6 +145,16 @@ def summarize_transcript(
         f"\n\nSummary style setting: {normalized_style}\n"
         f"{SUMMARY_STYLE_INSTRUCTIONS[normalized_style]}"
     )
+    if is_interview and normalized_style == "short":
+        system_prompt += (
+            "\nBecause the summary style is short, include at most 2 problem definition suggestions "
+            "and omit that section entirely if the evidence is weak, repetitive, or low-value."
+        )
+    elif is_interview and normalized_style == "minimal":
+        system_prompt += (
+            "\nBecause the summary style is minimal, include at most 1 problem definition suggestion "
+            "and omit it entirely unless it is especially strong and clearly supported."
+        )
 
     user_message = f"User notes: {notes}\n\nTranscript:\n{transcript}"
 
@@ -267,10 +281,11 @@ def _schedule_gemini_file_delete(api_key: str, file_ref) -> None:
 def cleanup_transcript(
     api_key: str,
     transcript: str,
+    notes: str = "",
     language: str = "en",
     meeting_context: str = "",
     company_context: str = "",
-    model: str = "gemini-2.5-flash-lite",
+    model: str = DEFAULT_CLEANUP_MODEL,
     audio_path: str = "",
 ) -> str:
     """Clean up a raw transcript using Gemini: fix names, sentences, add sections.
@@ -282,6 +297,7 @@ def cleanup_transcript(
     Args:
         api_key: Google Gemini API key.
         transcript: Raw formatted transcript from AssemblyAI.
+        notes: Fibery meeting notes or other trusted meeting context.
         language: Detected language code (e.g. "en", "nl").
         meeting_context: Participant names and organizations from Fibery.
         company_context: Company-specific context (uses default if empty).
@@ -311,13 +327,22 @@ def cleanup_transcript(
         system_prompt += TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM
 
     if meeting_context.strip():
-        system_prompt += f"\n{meeting_context}"
-    system_prompt += f"\n\nGeneral context:\n{context}"
+        system_prompt += f"\n\nConfirmed meeting-specific context:\n{meeting_context}"
+    system_prompt += (
+        "\n\nGeneral company context (glossary only; not evidence that a person attended this meeting):\n"
+        f"{context}"
+    )
+    user_prompt = transcript
+    if notes.strip():
+        user_prompt = f"Meeting notes:\n{notes.strip()}\n\nTranscript:\n{transcript}"
 
-    contents = [audio_ref, transcript] if audio_ref else transcript
+    contents = [audio_ref, user_prompt] if audio_ref else user_prompt
 
-    fallback_model = "gemini-3.1-flash-lite-preview"
-    models_to_try = [model, fallback_model]
+    fallback_model = "gemini-2.5-flash-lite"
+    models_to_try = []
+    for candidate in (model, fallback_model):
+        if candidate and candidate not in models_to_try:
+            models_to_try.append(candidate)
 
     try:
         for current_model in models_to_try:

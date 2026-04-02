@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 from unittest.mock import patch
 
@@ -51,6 +53,27 @@ def test_stereo_continues_with_silent_loopback_when_loopback_stalls():
     assert np.all(second[:, 1] == 0)
 
 
+def test_initial_missing_loopback_does_not_log_a_stall_warning(caplog):
+    clock = _FakeTime()
+    mixed: list[bytes] = []
+
+    with patch("audio.mixer.time") as mock_time:
+        mock_time.monotonic = clock.monotonic
+        with caplog.at_level(logging.WARNING):
+            mixer = AudioMixer(
+                on_mixed_chunk=mixed.append,
+                has_mic=True,
+                has_loopback=True,
+                stall_timeout_seconds=0.2,
+            )
+            mixer.add_mic_audio(_make_chunk(100))
+            clock.advance(0.25)
+            mixer.add_mic_audio(_make_chunk(200))
+
+    assert len(mixed) == 2
+    assert "loopback source stalled" not in caplog.text
+
+
 def test_stereo_continues_with_silent_mic_when_mic_stalls():
     clock = _FakeTime()
     mixed: list[bytes] = []
@@ -76,6 +99,29 @@ def test_stereo_continues_with_silent_mic_when_mic_stalls():
     assert np.all(first[:, 1] == 300)
     assert np.all(second[:, 0] == 0)
     assert np.all(second[:, 1] == 400)
+
+
+def test_loopback_stall_warning_still_fires_after_audio_has_started(caplog):
+    clock = _FakeTime()
+    mixed: list[bytes] = []
+
+    with patch("audio.mixer.time") as mock_time:
+        mock_time.monotonic = clock.monotonic
+        mixer = AudioMixer(
+            on_mixed_chunk=mixed.append,
+            has_mic=True,
+            has_loopback=True,
+            stall_timeout_seconds=0.2,
+        )
+        mixer.add_mic_audio(_make_chunk(10))
+        mixer.add_loopback_audio(_make_chunk(90))
+        caplog.clear()
+
+        with caplog.at_level(logging.WARNING):
+            clock.advance(0.25)
+            mixer.add_mic_audio(_make_chunk(20))
+
+    assert "loopback source stalled" in caplog.text
 
 
 def test_stall_recovery_stops_silence_padding():

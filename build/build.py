@@ -9,6 +9,7 @@ Usage:
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,18 @@ PROJECT_ROOT = Path(__file__).parent.parent
 BUILD_DIR = PROJECT_ROOT / "build"
 DIST_DIR = PROJECT_ROOT / "dist"
 SPEC_FILE = BUILD_DIR / "fibery_transcript.spec"
+INDEX_HTML = PROJECT_ROOT / "ui" / "static" / "index.html"
+
+VERSIONED_ASSETS = (
+    "icon.ico",
+    "icon.png",
+    "icon.svg",
+    "css/styles.css",
+    "js/audio-viz.js",
+    "js/transcript.js",
+    "js/settings.js",
+    "js/app.js",
+)
 
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
@@ -94,6 +107,26 @@ def _bump_patch_version() -> str:
     constants_path.write_text(content, encoding="utf-8")
     print(f"Version bumped: {old_version} -> {new_version}")
     return new_version
+
+
+def _sync_versioned_asset_urls(html: str, version: str) -> str:
+    updated = html
+    for asset in VERSIONED_ASSETS:
+        pattern = rf'((?:href|src)=["\']){re.escape(asset)}(?:\?v=[^"\']*)?(["\'])'
+        replacement = rf'\1{asset}?v={version}\2'
+        updated = re.sub(pattern, replacement, updated)
+    return updated
+
+
+def sync_index_asset_versions(version: str) -> bool:
+    """Ensure versioned UI asset URLs in index.html match APP_VERSION."""
+    content = INDEX_HTML.read_text(encoding="utf-8")
+    updated = _sync_versioned_asset_urls(content, version)
+    if updated == content:
+        return False
+    INDEX_HTML.write_text(updated, encoding="utf-8")
+    print(f"Synchronized index asset version tokens to {version}")
+    return True
 
 
 def post_build_windows():
@@ -219,6 +252,8 @@ def main():
 
     if "--no-bump" not in sys.argv:
         _bump_patch_version()
+
+    sync_index_asset_versions(_get_app_version())
 
     check_dependencies()
     build_pyinstaller()

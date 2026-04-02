@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FiberyTranscript</title>
-    <link rel="icon" type="image/x-icon" href="icon.ico">
-    <link rel="icon" type="image/png" sizes="32x32" href="icon.png">
-    <link rel="icon" type="image/svg+xml" href="icon.svg">
-    <link rel="stylesheet" href="css/styles.css">
+    <link rel="icon" type="image/x-icon" href="icon.ico?v=1.4.3">
+    <link rel="icon" type="image/png" sizes="32x32" href="icon.png?v=1.4.3">
+    <link rel="icon" type="image/svg+xml" href="icon.svg?v=1.4.3">
+    <link rel="stylesheet" href="css/styles.css?v=1.4.3">
 </head>
 <body data-theme="dark">
     <!-- Header Toolbar -->
@@ -150,41 +150,6 @@
                     </div>
                 </div>
 
-                <!-- Audio Storage Toggle (hidden until meeting + recording) -->
-                <div class="collapsible collapsed" id="audioStorageCollapsible">
-                    <div class="audio-storage-group" id="audioStorageGroup">
-                        <span class="audio-storage-label">Save to Fibery</span>
-                        <div class="summary-style-options" role="radiogroup" aria-label="Audio storage">
-                            <div class="summary-style-option">
-                                <input type="radio" id="storageLocal" name="audioStorage" value="local" checked>
-                                <label for="storageLocal">No</label>
-                            </div>
-                            <div class="summary-style-option">
-                                <input type="radio" id="storageFibery" name="audioStorage" value="fibery">
-                                <label for="storageFibery">Yes</label>
-                            </div>
-                        </div>
-                        <span class="audio-storage-hint" id="audioStorageHint"></span>
-                    </div>
-                </div>
-
-                <!-- Transcript Mode Toggle (hidden until meeting linked) -->
-                <div class="collapsible collapsed" id="transcriptModeCollapsible">
-                    <div class="audio-storage-group" id="transcriptModeGroup">
-                        <span class="audio-storage-label">Transcript</span>
-                        <div class="summary-style-options" role="radiogroup" aria-label="Transcript mode">
-                            <div class="summary-style-option">
-                                <input type="radio" id="modeAppend" name="transcriptMode" value="append" checked>
-                                <label for="modeAppend">Append</label>
-                            </div>
-                            <div class="summary-style-option">
-                                <input type="radio" id="modeReplace" name="transcriptMode" value="replace">
-                                <label for="modeReplace">Replace</label>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Upload section (hidden during recording) -->
                 <div class="collapsible" id="uploadCollapsible">
                     <div>
@@ -210,30 +175,64 @@
                                 </div>
                                 <button class="link-btn" id="clearUploadBtn">Clear</button>
                             </div>
-                            <div class="audio-storage-group hidden" id="uploadTranscriptMode">
-                                <span class="audio-storage-label">Transcript</span>
-                                <div class="summary-style-options" role="radiogroup" aria-label="Upload transcript mode">
-                                    <div class="summary-style-option">
-                                        <input type="radio" id="uploadModeAppend" name="uploadTranscriptMode" value="append" checked>
-                                        <label for="uploadModeAppend">Append</label>
+                            <div class="collapsible collapsed" id="audioStorageCollapsible">
+                                <div class="audio-storage-group" id="audioStorageGroup">
+                                    <span class="audio-storage-label">Save to Fibery</span>
+                                    <div class="summary-style-options" role="radiogroup" aria-label="Audio storage">
+                                        <div class="summary-style-option">
+                                            <input type="radio" id="storageLocal" name="audioStorage" value="local" checked>
+                                            <label for="storageLocal">No</label>
+                                        </div>
+                                        <div class="summary-style-option">
+                                            <input type="radio" id="storageFibery" name="audioStorage" value="fibery">
+                                            <label for="storageFibery">Yes</label>
+                                        </div>
                                     </div>
-                                    <div class="summary-style-option">
-                                        <input type="radio" id="uploadModeReplace" name="uploadTranscriptMode" value="replace">
-                                        <label for="uploadModeReplace">Replace</label>
-                                    </div>
+                                    <span class="audio-storage-hint" id="audioStorageHint"></span>
                                 </div>
                             </div>
-                            <button class="action-btn primary-btn hidden" id="transcribeBtn">Transcribe</button>
                         </div>
                     </div>
                 </div>
             </div>
         </section>
 
+        <!-- Step 3: Transcribe -->
+        <div class="collapsible collapsed" id="transcribePanelCollapsible">
+        <section class="step-panel" id="transcribePanel">
+            <div class="step-header">
+                <span class="step-icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/>
+                        <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                </span>
+                <h2>Transcribe</h2>
+            </div>
+            <div class="step-body">
+                <div class="transcript-mode-controls">
+                    <span class="transcript-mode-label">New transcript</span>
+                    <div class="summary-style-options" role="radiogroup" aria-label="Transcript mode">
+                        <div class="summary-style-option">
+                            <input type="radio" id="modeAppend" name="transcriptMode" value="append" checked>
+                            <label for="modeAppend">Append</label>
+                        </div>
+                        <div class="summary-style-option">
+                            <input type="radio" id="modeReplace" name="transcriptMode" value="replace">
+                            <label for="modeReplace">Replace</label>
+                        </div>
+                    </div>
+                </div>
+                <button class="action-btn primary-btn" id="transcribeBtn">Transcribe</button>
+            </div>
+        </section>
+        </div>
+
         <!-- Hidden transcript container (used by TranscriptManager for data storage) -->
         <div id="transcriptContent" class="hidden"></div>
 
-        <!-- Step 3: AI Summary (hidden until recording/file) -->
+        <!-- Step 4: AI Summary (hidden until recording/file) -->
         <div class="collapsible collapsed" id="sendPanelCollapsible">
         <section class="step-panel step-panel-last" id="sendPanel">
             <div class="step-header">
@@ -292,7 +291,6 @@
                     </div>
                     <div class="summary-status-row hidden" id="summaryStatusRow">
                         <div class="status-badge" id="summaryStatusBadge"></div>
-                        <button class="link-btn hidden" id="copySummaryStatusBtn" title="Copy summary status">Copy Status</button>
                     </div>
                     <div class="retry-row hidden" id="retryRow">
                         <button class="action-btn small-btn" id="retryTranscriptBtn" style="display:none;">Retry Send Transcript</button>
@@ -378,7 +376,7 @@
                     <h3>Extra Post-Processing</h3>
                     <p class="setting-note">Optional cleanup steps after recording or uploading.</p>
                     <div class="setting-row checkbox-row">
-                        <label for="audioTranscriptCleanupEnabled">Audio-based transcript cleanup</label>
+                        <label for="audioTranscriptCleanupEnabled">Also send audio to Gemini during transcript improvement</label>
                         <input type="checkbox" id="audioTranscriptCleanupEnabled" />
                     </div>
                     <div class="setting-row checkbox-row">
@@ -440,7 +438,7 @@
                     </div>
                     <div class="setting-row">
                         <label for="settingsGeminiCleanup">Cleanup Model</label>
-                        <input type="text" id="settingsGeminiCleanup" placeholder="e.g. gemini-2.0-flash" />
+                        <input type="text" id="settingsGeminiCleanup" placeholder="e.g. gemini-3.1-flash-lite-preview" />
                     </div>
                 </div>
                 <div class="setting-group">
@@ -498,9 +496,9 @@
     <!-- Toast Notifications -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="js/audio-viz.js"></script>
-    <script src="js/transcript.js"></script>
-    <script src="js/settings.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/audio-viz.js?v=1.4.3"></script>
+    <script src="js/transcript.js?v=1.4.3"></script>
+    <script src="js/settings.js?v=1.4.3"></script>
+    <script src="js/app.js?v=1.4.3"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 """Application constants and prompt templates."""
 
 APP_NAME = "Fibery Transcript"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.3"
 APP_WINDOW_TITLE = "FiberyTranscript"
 APP_AUTOSTART_REG_VALUE = "FiberyTranscript"
 APP_LEGACY_AUTOSTART_REG_VALUES = ("Fibery Transcript",)
@@ -87,9 +87,18 @@ TRANSCRIPT_CLEANUP_PROMPT = """You are a transcript checker. Your task is to cle
 an auto-generated meeting transcript. Remove filler words. Use the meeting context to resolve name ambiguities \
 and fix obvious transcription errors. Instructions:
 - Keep the original language. Do NOT translate.
-- When possible, identify speakers by name using the meeting context. Replace generic \
-labels with real names where you can confidently identify them. \
-If uncertain about a speaker's identity, keep the label generic but consistent. 
+- Only replace a generic speaker label with a real name when the identity is directly supported by \
+meeting-specific evidence such as the confirmed participant list, meeting notes, the transcript itself, \
+or the attached audio.
+- Never assign a speaker name based only on general company context, a glossary, or a list of possible names. \
+General company context is only for spelling correction and term disambiguation, not proof that someone attended.
+- If there is any doubt, keep the label generic and consistent rather than guessing.
+- When two nearby speaker turns contain identical or almost identical text and one is clearly a duplicate echo, \
+keep the source version and remove the echoed duplicate.
+- If only part of a nearby speaker turn is duplicated (for example the first one or two sentences are repeated \
+and the rest is new), remove the duplicated portion and keep the unique remainder.
+- If the duplicate appears on two channels and the later/source copy is on Channel 1 while the earlier duplicate \
+is on Channel 0, prefer keeping Channel 1 and removing the duplicate Channel 0 text.
 - Format speaker label as **Name:** on its own line, followed by the text.
 - Fix obvious transcription errors: broken sentences, misheard words, grammar issues.
 - No Yeah, Uh, Um, Like, You know, or lonely "and" or similar filler words. Remove them entirely.

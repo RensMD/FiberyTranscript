@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import shutil
 import tempfile
+import threading
 
 from config.settings import Settings
 from session import RecordingSession, SessionContext, SessionResults
@@ -32,6 +33,7 @@ class TestStateConstants:
         from app import FiberyTranscriptApp
         assert FiberyTranscriptApp.STATE_IDLE == "idle"
         assert FiberyTranscriptApp.STATE_RECORDING == "recording"
+        assert FiberyTranscriptApp.STATE_PREPARED == "prepared"
         assert FiberyTranscriptApp.STATE_PROCESSING == "processing"
         assert FiberyTranscriptApp.STATE_COMPLETED == "completed"
 
@@ -305,6 +307,7 @@ class TestUploadedFileStaging:
             app = _make_app(data_dir=root / "appdata")
             app._validate_audio_file = MagicMock()
             app.stop_background_scanning = MagicMock()
+            app.start_background_scanning = MagicMock()
             app.audio_capture = MagicMock()
             app.audio_capture.is_capturing.return_value = False
 
@@ -322,6 +325,38 @@ class TestUploadedFileStaging:
             assert source.exists()
             assert app._session.context.compressed_path == str(staged)
             thread_cls.return_value.start.assert_called_once_with()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class TestPreparedAudioClearing:
+    def test_clear_prepared_recorded_audio_resets_to_idle_without_deleting_file(self):
+        root = _make_test_root("test_clear_prepared_recorded_audio")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app._validate_audio_file = MagicMock(return_value={"channels": 1, "duration_seconds": 42})
+            app._resume_background_scanning = MagicMock()
+            app._validated_entity = "meeting-entity"
+
+            recorded = app.data_dir / "recordings" / "meeting.wav"
+            recorded.parent.mkdir(parents=True, exist_ok=True)
+            recorded.write_bytes(b"recorded-audio")
+
+            app._set_prepared_session(
+                wav_path=str(recorded),
+                compressed_path="",
+                is_uploaded_file=False,
+                entity="session-entity",
+            )
+
+            app.clear_prepared_audio()
+
+            assert app.state == app.STATE_IDLE
+            assert app._session is None
+            assert app._prepared_audio_info is None
+            assert app._validated_entity == "meeting-entity"
+            assert recorded.exists()
+            assert recorded.read_bytes() == b"recorded-audio"
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -423,6 +458,7 @@ class TestRecorderLifecycle:
             )
             app._validate_audio_file = MagicMock()
             app.stop_background_scanning = MagicMock()
+            app.start_background_scanning = MagicMock()
             app.audio_capture = MagicMock()
             app.audio_capture.is_capturing.return_value = False
 
@@ -448,6 +484,7 @@ class TestRecorderLifecycle:
             app = _make_app(data_dir=root / "appdata")
             app._validate_audio_file = MagicMock()
             app.stop_background_scanning = MagicMock()
+            app.start_background_scanning = MagicMock()
             app.audio_capture = MagicMock()
             app.audio_capture.is_capturing.return_value = False
 
@@ -548,12 +585,66 @@ class TestRecordingBackgroundScanning:
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_start_monitor_does_not_overlap_recording_start(self):
+        root = _make_test_root("test_start_monitor_does_not_overlap_recording_start")
+        try:
+            app = _make_app(
+                settings=Settings(display_name="Test", noise_suppression=False, agc=False),
+                data_dir=root / "appdata",
+            )
+            app.stop_background_scanning = MagicMock()
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+
+            capture_calls: list[dict] = []
+            recording_capture_started = threading.Event()
+            release_recording_capture = threading.Event()
+            overlapping_monitor_capture = threading.Event()
+
+            def start_capture(**kwargs):
+                capture_calls.append(kwargs)
+                if len(capture_calls) == 1:
+                    recording_capture_started.set()
+                    assert release_recording_capture.wait(timeout=2.0)
+                else:
+                    overlapping_monitor_capture.set()
+
+            app.audio_capture.start_capture.side_effect = start_capture
+
+            mic = SimpleNamespace(name="Mic")
+            app._find_device = MagicMock(side_effect=lambda index, is_loopback: None if is_loopback else mic)
+
+            recorder = MagicMock()
+            recorder.start.return_value = root / "appdata" / "recordings" / "segment.wav"
+
+            with patch("app.WavRecorder", return_value=recorder):
+                recording_thread = threading.Thread(target=app.start_recording, args=(1, None))
+                monitor_thread = threading.Thread(target=app.start_monitor, args=(1, None))
+
+                recording_thread.start()
+                assert recording_capture_started.wait(timeout=2.0)
+
+                monitor_thread.start()
+                assert not overlapping_monitor_capture.wait(timeout=0.2)
+
+                release_recording_capture.set()
+                recording_thread.join(timeout=2.0)
+                monitor_thread.join(timeout=2.0)
+
+            assert not recording_thread.is_alive()
+            assert not monitor_thread.is_alive()
+            assert len(capture_calls) == 1
+            assert app.state == app.STATE_RECORDING
+            app.audio_capture.stop_capture.assert_not_called()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_batch_processing_restarts_background_scanning_after_completion(self):
         root = _make_test_root("test_batch_processing_restarts_background_scan")
         try:
             app = _make_app(data_dir=root / "appdata")
             app.state = app.STATE_PROCESSING
-            app.start_background_scanning = MagicMock()
+            app._resume_background_scanning = MagicMock()
             app._notify_js = MagicMock()
             session = RecordingSession(SessionContext(wav_path=str(root / "meeting.wav")))
 
@@ -568,13 +659,15 @@ class TestRecordingBackgroundScanning:
                 with patch("transcription.batch.transcribe_with_diarization", return_value=result):
                     app._run_batch_processing(session)
 
-            app.start_background_scanning.assert_called_once_with()
+            app._resume_background_scanning.assert_called_once_with()
             assert app.state == app.STATE_COMPLETED
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
-    def test_batch_processing_skips_gemini_cleanup_when_disabled(self):
-        root = _make_test_root("test_batch_processing_skips_gemini_cleanup")
+    def test_batch_processing_runs_text_only_gemini_cleanup_when_audio_attachment_disabled(self):
+        from app import TranscriptionOptions
+
+        root = _make_test_root("test_batch_processing_runs_text_only_gemini_cleanup")
         try:
             app = _make_app(
                 settings=Settings(
@@ -584,7 +677,7 @@ class TestRecordingBackgroundScanning:
                 data_dir=root / "appdata",
             )
             app.state = app.STATE_PROCESSING
-            app.start_background_scanning = MagicMock()
+            app._resume_background_scanning = MagicMock()
             app._notify_js = MagicMock()
             session = RecordingSession(SessionContext(wav_path=str(root / "meeting.wav")))
 
@@ -594,6 +687,8 @@ class TestRecordingBackgroundScanning:
                 "language": "en",
                 "audio_path": str(root / "meeting.ogg"),
             }
+            (root / "meeting.ogg").write_bytes(b"ogg")
+            (root / "meeting.ogg").write_bytes(b"ogg")
 
             def _get_key(name):
                 if name == "assemblyai_api_key":
@@ -604,19 +699,28 @@ class TestRecordingBackgroundScanning:
 
             with patch("app.get_key", side_effect=_get_key):
                 with patch("transcription.batch.transcribe_with_diarization", return_value=result):
-                    with patch("integrations.gemini_client.cleanup_transcript") as cleanup:
-                        app._run_batch_processing(session)
+                    with patch(
+                        "integrations.gemini_client.cleanup_transcript",
+                        return_value="Cleaned transcript",
+                    ) as cleanup:
+                        app._run_batch_processing(
+                            session,
+                            TranscriptionOptions(improve_with_context=True),
+                        )
 
-            cleanup.assert_not_called()
-            app.start_background_scanning.assert_called_once_with()
+            cleanup.assert_called_once()
+            assert cleanup.call_args.kwargs["audio_path"] == ""
+            app._resume_background_scanning.assert_called_once_with()
             assert app.state == app.STATE_COMPLETED
-            assert session.results.get_cleaned_transcript() == format_diarized_transcript(result["utterances"])
+            assert session.results.get_cleaned_transcript() == "Cleaned transcript"
             messages = [call.args[0] for call in app._notify_js.call_args_list]
             assert "window.onCleanupFailed()" not in messages
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
     def test_batch_processing_runs_gemini_cleanup_when_enabled(self):
+        from app import TranscriptionOptions
+
         root = _make_test_root("test_batch_processing_runs_gemini_cleanup")
         try:
             app = _make_app(
@@ -637,6 +741,7 @@ class TestRecordingBackgroundScanning:
                 "language": "en",
                 "audio_path": str(root / "meeting.ogg"),
             }
+            (root / "meeting.ogg").write_bytes(b"ogg")
 
             def _get_key(name):
                 if name == "assemblyai_api_key":
@@ -648,7 +753,10 @@ class TestRecordingBackgroundScanning:
             with patch("app.get_key", side_effect=_get_key):
                 with patch("transcription.batch.transcribe_with_diarization", return_value=result):
                     with patch("integrations.gemini_client.cleanup_transcript", return_value="Cleaned transcript") as cleanup:
-                        app._run_batch_processing(session)
+                        app._run_batch_processing(
+                            session,
+                            TranscriptionOptions(improve_with_context=True),
+                        )
 
             cleanup.assert_called_once()
             assert cleanup.call_args.kwargs["audio_path"] == result["audio_path"]
@@ -776,12 +884,21 @@ class TestRecordingBackgroundScanning:
             recorder.compressed_path = None
             app._recorder = recorder
             app._session = RecordingSession(SessionContext())
+            app._validate_audio_file = MagicMock(return_value={
+                "format": "WAV",
+                "duration_seconds": 5.0,
+                "sample_rate": 16000,
+                "channels": 1,
+                "size_bytes": 2048,
+            })
             app._finalize_segments = MagicMock(
                 side_effect=lambda: events.append("finalize") or (str(root / "appdata" / "meeting.wav"), "")
             )
             app._release_recording_lock_async = MagicMock(
                 side_effect=lambda entity: events.append("release_lock")
             )
+            (root / "appdata").mkdir(parents=True, exist_ok=True)
+            (root / "appdata" / "meeting.wav").write_bytes(b"wav")
 
             with patch("app.threading.Thread") as thread_cls:
                 thread_cls.return_value = MagicMock()
@@ -789,7 +906,7 @@ class TestRecordingBackgroundScanning:
 
             assert events.index("stop_capture") < events.index("release_lock")
             assert events.index("recorder_stop") < events.index("release_lock")
-            assert app.state == app.STATE_PROCESSING
+            assert app.state == app.STATE_PREPARED
             app._release_recording_lock_async.assert_called_once_with(app._validated_entity)
         finally:
             shutil.rmtree(root, ignore_errors=True)

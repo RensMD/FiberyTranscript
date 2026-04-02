@@ -260,110 +260,105 @@ class FiberyClient:
         try:
             db_type = f"{entity.space}/{entity.database}"
             name_field = f"{entity.space}/{'name' if entity.space == 'Network' else 'Name'}"
+            rows = None
+            select = None
+            resp = None
+            last_exc = None
+            select_variants = self._build_entity_context_select_variants(entity, name_field)
 
-            # Build select based on entity type
-            select = [name_field]
-
-            if entity.database in ("External Meeting", "Internal Meeting"):
-                # Standard assignees field
-                select.append({"assignments/assignees": {
-                    "q/from": "assignments/assignees",
-                    "q/select": ["user/name"],
-                    "q/limit": 50,
-                }})
-            elif entity.database == "Market Interview":
-                # Market Interview uses its own assignees field
-                select.append({"Market/Assignees": {
-                    "q/from": "Market/Assignees",
-                    "q/select": ["user/name"],
-                    "q/limit": 50,
-                }})
-
-            if entity.database == "External Meeting":
-                select.append({"Network/People": {
-                    "q/from": "Network/People",
-                    "q/select": [
-                        "Network/name",
-                        {"Network/Organizations": ["Network/Name"]},
-                    ],
-                    "q/limit": 50,
-                }})
-                select.append({"Network/Organizations": {
-                    "q/from": "Network/Organization",
-                    "q/select": ["Network/Name"],
-                    "q/limit": 50,
-                }})
-                select.append({"Network/Operators": {
-                    "q/from": "Market/Operator",
-                    "q/select": ["Market/Name"],
-                    "q/limit": 50,
-                }})
-
-            elif entity.database == "Market Interview":
-                select.append({"Market/People": {
-                    "q/from": "Market/People",
-                    "q/select": [
-                        "Network/name",
-                        {"Network/Organizations": ["Network/Name"]},
-                    ],
-                    "q/limit": 50,
-                }})
-                # Market/Organization is a single relation, not collection
-                select.append({"Market/Organization": ["Network/Name"]})
-
-            payload = [{
-                "command": "fibery.entity/query",
-                "args": {
-                    "query": {
-                        "q/from": db_type,
-                        "q/select": select,
-                        "q/where": ["=", ["fibery/id"], "$uuid"],
-                        "q/limit": 1,
+            for index, candidate_select in enumerate(select_variants, start=1):
+                select = candidate_select
+                payload = [{
+                    "command": "fibery.entity/query",
+                    "args": {
+                        "query": {
+                            "q/from": db_type,
+                            "q/select": select,
+                            "q/where": ["=", ["fibery/id"], "$uuid"],
+                            "q/limit": 1,
+                        },
+                        "params": {"$uuid": entity.uuid},
                     },
-                    "params": {"$uuid": entity.uuid},
-                },
-            }]
+                }]
 
-            resp = self._session.post(self._api_url, json=payload, timeout=self._TIMEOUT)
-            resp.raise_for_status()
-            result = resp.json()
+                try:
+                    resp = self._session.post(self._api_url, json=payload, timeout=self._TIMEOUT)
+                    resp.raise_for_status()
+                    result = resp.json()
+                    rows = self._extract_query_rows(result, context="entity context")
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if index < len(select_variants):
+                        logger.info(
+                            "Entity context query variant %d/%d failed for %s/%s, retrying with reduced select: %s",
+                            index,
+                            len(select_variants),
+                            entity.space,
+                            entity.database,
+                            exc,
+                        )
+                        continue
+                    raise
 
-            row = result[0]["result"][0]
+            if not rows:
+                raise last_exc or LookupError("entity context query returned no rows")
+            row = rows[0]
             ctx.entity_name = row.get(name_field, entity.entity_name) or entity.entity_name
 
             # Parse assignees
             assignees_key = "Market/Assignees" if entity.database == "Market Interview" else "assignments/assignees"
-            for a in row.get(assignees_key, []) or []:
+            for a in self._as_relation_rows(row.get(assignees_key)):
                 name = a.get("user/name", "")
                 if name:
                     ctx.assignee_names.append(name)
 
             # Parse people (External Meeting + Market Interview)
-            people_key = "Network/People" if entity.database == "External Meeting" else "Market/People"
-            for p in row.get(people_key, []) or []:
+            people_key = None
+            if entity.database == "External Meeting":
+                people_key = "Network/People"
+            elif entity.database == "Market Interview":
+                people_key = "Market/People"
+
+            people_rows = self._as_relation_rows(row.get(people_key)) if people_key else []
+            for p in people_rows:
                 name = p.get("Network/name", "")
                 if not name:
                     continue
                 ctx.people_names.append(name)
                 org_data = p.get("Network/Organizations") or {}
-                org_name = org_data.get("Network/Name", "") if isinstance(org_data, dict) else ""
+                org_name = ""
+                if isinstance(org_data, list):
+                    org_names = [
+                        item.get("Network/Name", "")
+                        for item in org_data
+                        if isinstance(item, dict) and item.get("Network/Name", "")
+                    ]
+                    org_name = ", ".join(org_names)
+                elif isinstance(org_data, dict):
+                    org_name = org_data.get("Network/Name", "")
                 ctx.people_with_orgs.append({"name": name, "org": org_name})
 
             # Parse organizations
             if entity.database == "External Meeting":
-                for o in row.get("Network/Organizations", []) or []:
+                for o in self._as_relation_rows(row.get("Network/Organizations")):
                     name = o.get("Network/Name", "")
                     if name:
                         ctx.organization_names.append(name)
             elif entity.database == "Market Interview":
-                org_data = row.get("Market/Organization") or {}
-                org_name = org_data.get("Network/Name", "") if isinstance(org_data, dict) else ""
-                if org_name:
-                    ctx.organization_names.append(org_name)
+                for o in self._as_relation_rows(row.get("Market/Organizations")):
+                    name = o.get("Network/Name", "")
+                    if name:
+                        ctx.organization_names.append(name)
+                if not ctx.organization_names:
+                    org_data = row.get("Market/Organization") or {}
+                    org_name = org_data.get("Network/Name", "") if isinstance(org_data, dict) else ""
+                    if org_name:
+                        ctx.organization_names.append(org_name)
 
             # Parse operators (External Meeting only)
             if entity.database == "External Meeting":
-                for o in row.get("Network/Operators", []) or []:
+                for o in self._as_relation_rows(row.get("Network/Operators")):
                     name = o.get("Market/Name", "")
                     if name:
                         ctx.operator_names.append(name)
@@ -375,9 +370,129 @@ class FiberyClient:
             )
 
         except Exception as e:
-            logger.warning("Failed to fetch entity context: %s", e)
+            response_excerpt = ""
+            try:
+                response_excerpt = resp.text[:500]
+            except Exception:
+                response_excerpt = ""
+            logger.warning(
+                "Failed to fetch entity context for %s/%s (%s): %s | response=%s | select=%s",
+                entity.space,
+                entity.database,
+                entity.uuid or entity.internal_id,
+                e,
+                response_excerpt or "<unavailable>",
+                select if "select" in locals() else "<unavailable>",
+            )
 
         return ctx
+
+    @classmethod
+    def _build_entity_context_select_variants(cls, entity: FiberyEntity, name_field: str) -> list[dict]:
+        """Build q/select variants for entity-context enrichment.
+
+        Fibery collection relations require an object form with nested q/select
+        and q/from blocks; bare list syntax triggers
+        query-select-collection-field-vector-shape-invalid.
+        """
+        base_select: dict = {
+            name_field: [name_field],
+        }
+
+        if entity.database in ("External Meeting", "Internal Meeting"):
+            base_select["assignments/assignees"] = cls._nested_context_query(
+                "assignments/assignees",
+                {
+                    "user/name": ["user/name"],
+                },
+            )
+        elif entity.database == "Market Interview":
+            base_select["Market/Assignees"] = cls._nested_context_query(
+                "Market/Assignees",
+                {
+                    "user/name": ["user/name"],
+                },
+            )
+
+        if entity.database == "External Meeting":
+            base_select["Network/People"] = cls._nested_context_query(
+                "Network/People",
+                {
+                    "fibery/id": ["fibery/id"],
+                    "Network/name": ["Network/name"],
+                },
+            )
+            base_select["Network/Organizations"] = cls._nested_context_query(
+                "Network/Organizations",
+                {
+                    "Network/Name": ["Network/Name"],
+                },
+            )
+            base_select["Network/Operators"] = cls._nested_context_query(
+                "Network/Operators",
+                {
+                    "Market/Name": ["Market/Name"],
+                },
+            )
+            return [base_select]
+        elif entity.database == "Market Interview":
+            base_select["Market/People"] = cls._nested_context_query(
+                "Market/People",
+                {
+                    "fibery/id": ["fibery/id"],
+                    "Network/name": ["Network/name"],
+                },
+            )
+            full_select = dict(base_select)
+            full_select["Market/Organizations"] = cls._nested_context_query(
+                "Market/Organizations",
+                {
+                    "Network/Name": ["Network/Name"],
+                },
+            )
+            legacy_select = dict(base_select)
+            legacy_select["Market/Organization"] = {
+                "Network/Name": ["Market/Organization", "Network/Name"],
+            }
+            return [full_select, legacy_select, base_select]
+
+        return [base_select]
+
+    @staticmethod
+    def _nested_context_query(path: str | list[str], select: dict) -> dict:
+        """Return a nested Fibery relation query for q/select."""
+        path_parts = [path] if isinstance(path, str) else list(path)
+        return {
+            "q/from": path_parts,
+            "q/select": select,
+            "q/limit": "q/no-limit",
+        }
+
+    @staticmethod
+    def _as_relation_rows(value) -> list[dict]:
+        """Normalize Fibery relation query results to a list of row dicts."""
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        if isinstance(value, dict):
+            return [value]
+        return []
+
+    @staticmethod
+    def _extract_query_rows(result, *, context: str) -> list:
+        """Return Fibery query rows or raise a helpful response-shape error."""
+        if not isinstance(result, list) or not result:
+            raise ValueError(f"{context} returned unexpected top-level response: {type(result).__name__}")
+
+        first = result[0]
+        if not isinstance(first, dict):
+            raise ValueError(f"{context} returned a non-dict first command result")
+        if first.get("success") is False:
+            raise RuntimeError(first.get("result") or f"{context} query failed")
+
+        rows = first.get("result")
+        if isinstance(rows, list):
+            return rows
+        raise ValueError(f"{context} returned non-list rows: {type(rows).__name__}")
 
     def update_entity(
         self,
@@ -686,13 +801,38 @@ class FiberyClient:
 
         raise last_exc
 
+    def _get_file_fields(self, entity: FiberyEntity) -> list[str]:
+        """Return candidate file collection fields for an entity type."""
+        if entity.database == "Market Interview":
+            # Market Interview files live in the Market namespace in some
+            # workspaces. Keep the legacy Files/Files field as a fallback so
+            # older schemas continue to work.
+            return ["Market/Files", "Files/Files"]
+        return ["Files/Files"]
+
     def attach_file_to_entity(self, entity: FiberyEntity, file_id: str) -> None:
         """Attach an uploaded file to a Fibery entity's Files collection."""
         if not entity.uuid:
             self.get_entity_uuid(entity)
 
-        self._add_collection_items(entity, "Files/Files", [{"fibery/id": file_id}])
-        logger.info("Attached file %s to entity %s", file_id, entity.uuid)
+        items = [{"fibery/id": file_id}]
+        last_exc = None
+        for field in self._get_file_fields(entity):
+            try:
+                self._add_collection_items(entity, field, items)
+                logger.info("Attached file %s to entity %s via %s", file_id, entity.uuid, field)
+                return
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Failed to attach file %s to entity %s via %s: %s",
+                    file_id,
+                    entity.uuid,
+                    field,
+                    exc,
+                )
+
+        raise last_exc
 
     # --- Recording lock ---
 

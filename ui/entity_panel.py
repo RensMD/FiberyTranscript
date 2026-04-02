@@ -11,6 +11,7 @@ Right panel (Fibery):   fills all remaining space; window expands to fit.
 import logging
 import os
 import sys
+import threading
 
 from config.constants import FIBERY_INSTANCE_URL
 
@@ -49,9 +50,10 @@ def _get_cache_dir():
 
 
 class EntityPanel:
-    def __init__(self, main_window, settings=None):
+    def __init__(self, main_window, settings=None, notify_js=None):
         self._main = main_window
         self._settings = settings
+        self._notify_js = notify_js
         self._split = None          # WinForms SplitContainer
         self._panel_wv = None       # second WebView2 control
         self._original_width = None
@@ -230,20 +232,10 @@ class EntityPanel:
 
         # Navigate once the core is ready
         _url = url
-        main_window = self._main
 
         def _fire_url_changed(url):
             """Notify the main webview of a panel URL change (on background thread)."""
-            if not url or not main_window:
-                return
-            import json
-            import threading
-            threading.Thread(
-                target=lambda: main_window.evaluate_js(
-                    f"window.onPanelUrlChanged && window.onPanelUrlChanged({json.dumps(url)})"
-                ),
-                daemon=True,
-            ).start()
+            self._notify_url_change(url)
 
         def on_web_message(sender, args):
             """Handle URL change messages from the injected SPA pushState hook."""
@@ -286,6 +278,36 @@ class EntityPanel:
         panel_wv.SourceChanged += on_source_changed
         panel_wv.EnsureCoreWebView2Async(None)
         return panel_wv
+
+    def _notify_url_change(self, url: str) -> None:
+        """Forward a Fibery panel URL change to the main window JS safely."""
+        if not url:
+            return
+
+        import json
+
+        js_code = (
+            "window.onPanelUrlChanged && "
+            f"window.onPanelUrlChanged({json.dumps(url)})"
+        )
+
+        def _dispatch():
+            if self._notify_js:
+                try:
+                    self._notify_js(js_code)
+                except Exception:
+                    logger.debug("Panel URL change via app notifier failed", exc_info=True)
+                return
+
+            if not self._main:
+                return
+
+            try:
+                self._main.evaluate_js(js_code)
+            except Exception:
+                logger.debug("Panel URL change notify skipped", exc_info=True)
+
+        threading.Thread(target=_dispatch, daemon=True).start()
 
     def _navigate(self, url: str):
         """Navigate the already-open panel to a new URL."""

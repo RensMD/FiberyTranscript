@@ -113,10 +113,10 @@ class ApiBridge:
             return {"success": False, "error": str(e)}
 
     def stop_recording(self) -> dict:
-        """Stop recording and trigger batch processing."""
+        """Stop recording and stage the result for transcription."""
         try:
-            self._app.stop_recording()
-            return {"success": True}
+            info = self._app.stop_recording()
+            return {"success": True, "prepared_audio": info or {}}
         except Exception as e:
             logger.error("Failed to stop recording: %s", e)
             return {"success": False, "error": str(e)}
@@ -174,6 +174,22 @@ class ApiBridge:
 
     # --- File Upload (Browse & Transcribe) ---
 
+    @staticmethod
+    def _get_file_dialog_type(webview_module, kind: str):
+        """Return the best available pywebview file-dialog enum value."""
+        file_dialog = getattr(webview_module, "FileDialog", None)
+        if file_dialog is not None:
+            modern_name = "OPEN" if kind == "open" else "FOLDER"
+            modern_value = getattr(file_dialog, modern_name, None)
+            if modern_value is not None:
+                return modern_value
+
+        legacy_name = "OPEN_DIALOG" if kind == "open" else "FOLDER_DIALOG"
+        legacy_value = getattr(webview_module, legacy_name, None)
+        if legacy_value is None:
+            raise RuntimeError(f"pywebview dialog type '{kind}' is unavailable")
+        return legacy_value
+
     def browse_audio_file(self) -> dict:
         """Open a native file picker dialog for audio files."""
         try:
@@ -183,7 +199,7 @@ class ApiBridge:
                 "Audio files (*.wav;*.mp3;*.ogg;*.flac;*.m4a;*.aac;*.wma;*.webm)",
             )
             result = self._app.window.create_file_dialog(
-                webview.OPEN_DIALOG,
+                self._get_file_dialog_type(webview, "open"),
                 file_types=file_types,
             )
             if result and len(result) > 0:
@@ -206,8 +222,46 @@ class ApiBridge:
             logger.error("Audio validation failed: %s", e)
             return {"success": False, "error": str(e)}
 
+    def prepare_uploaded_audio(self, file_path: str) -> dict:
+        """Validate and stage an uploaded audio file."""
+        try:
+            info = self._app.prepare_uploaded_audio(file_path)
+            return {"success": True, "prepared_audio": info}
+        except Exception as e:
+            logger.error("Upload preparation failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def start_transcription(
+        self,
+        remove_echo: bool = False,
+        improve_with_context: bool = True,
+        transcript_mode: str = "append",
+    ) -> dict:
+        """Start transcription for the currently staged audio file."""
+        try:
+            from app import TranscriptionOptions
+
+            result = self._app.start_transcription(TranscriptionOptions(
+                remove_echo=bool(remove_echo),
+                improve_with_context=bool(improve_with_context),
+                transcript_mode=transcript_mode,
+            ))
+            return result
+        except Exception as e:
+            logger.error("Transcription start failed: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def clear_prepared_audio(self) -> dict:
+        """Discard staged audio while keeping the current meeting link."""
+        try:
+            self._app.clear_prepared_audio()
+            return {"success": True}
+        except Exception as e:
+            logger.error("Failed to clear prepared audio: %s", e)
+            return {"success": False, "error": str(e)}
+
     def upload_and_transcribe(self, file_path: str) -> dict:
-        """Start transcription of an uploaded audio file."""
+        """Compatibility wrapper for legacy callers."""
         try:
             self._app.upload_and_transcribe(file_path)
             return {"success": True}
@@ -221,7 +275,9 @@ class ApiBridge:
         """Open a native folder picker dialog and return the selected path."""
         try:
             import webview
-            result = self._app.window.create_file_dialog(webview.FOLDER_DIALOG)
+            result = self._app.window.create_file_dialog(
+                self._get_file_dialog_type(webview, "folder")
+            )
             if result and len(result) > 0:
                 return {"success": True, "path": result[0]}
             return {"success": False, "error": "No folder selected"}

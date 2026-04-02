@@ -221,6 +221,51 @@ def test_transcribe_keeps_precompressed_fallback_when_post_processor_returns_ori
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_multichannel_transcription_skips_speaker_identification_hints():
+    config = batch._build_config_kwargs(
+        word_boost=["Andrej", "Google"],
+        speaker_hints={
+            "speaker_options": {
+                "min_speakers_expected": 2,
+                "max_speakers_expected": 3,
+                "use_two_stage_clustering": True,
+            },
+            "speaker_identification": ["Andrej Karpathy", "Dwarkesh Patel"],
+        },
+        multichannel=True,
+    )
+
+    assert config["multichannel"] is True
+    assert config["speaker_labels"] is True
+    assert config["speaker_options"] == {
+        "min_speakers_expected": 2,
+        "max_speakers_expected": 3,
+        "use_two_stage_clustering": True,
+    }
+    assert "speech_understanding" not in config
+
+
+def test_mono_transcription_keeps_speaker_identification_hints():
+    config = batch._build_config_kwargs(
+        word_boost=None,
+        speaker_hints={
+            "speakers_expected": 2,
+            "speaker_identification": ["Andrej Karpathy", "Dwarkesh Patel"],
+        },
+        multichannel=False,
+    )
+
+    assert config["speakers_expected"] == 2
+    assert config["speech_understanding"] == {
+        "request": {
+            "speaker_identification": {
+                "speaker_type": "name",
+                "known_values": ["Andrej Karpathy", "Dwarkesh Patel"],
+            }
+        }
+    }
+
+
 def test_post_processor_returns_original_file_when_no_stage_changes_audio():
     root = _make_test_root("test_post_processor_noop_returns_original")
     try:
@@ -245,3 +290,154 @@ def test_post_processor_returns_original_file_when_no_stage_changes_audio():
         assert not (root / "meeting_processed.wav").exists()
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def test_echo_dedupe_drops_lower_confidence_mic_duplicate():
+    utterances = [
+        {
+            "speaker": "A",
+            "text": "That model will probably have to look it up.",
+            "start": 1000,
+            "end": 2500,
+            "channel": 0,
+            "confidence": 0.71,
+        },
+        {
+            "speaker": "B",
+            "text": "That model will probably have to look it up.",
+            "start": 1080,
+            "end": 2480,
+            "channel": 1,
+            "confidence": 0.92,
+        },
+    ]
+
+    result = batch._suppress_echo_duplicates(utterances)
+
+    assert len(result) == 1
+    assert result[0]["channel"] == 1
+
+
+def test_echo_dedupe_keeps_distinct_mic_speech():
+    utterances = [
+        {
+            "speaker": "A",
+            "text": "Can you hear me now?",
+            "start": 1000,
+            "end": 1800,
+            "channel": 0,
+            "confidence": 0.95,
+        },
+        {
+            "speaker": "B",
+            "text": "Let's move to the next question.",
+            "start": 1120,
+            "end": 2500,
+            "channel": 1,
+            "confidence": 0.91,
+        },
+    ]
+
+    result = batch._suppress_echo_duplicates(utterances)
+
+    assert len(result) == 2
+
+
+def test_echo_dedupe_requires_true_time_overlap():
+    utterances = [
+        {
+            "speaker": "A",
+            "text": "That model will probably have to look it up.",
+            "start": 1000,
+            "end": 1800,
+            "channel": 0,
+            "confidence": 0.70,
+        },
+        {
+            "speaker": "B",
+            "text": "That model will probably have to look it up.",
+            "start": 1820,
+            "end": 2600,
+            "channel": 1,
+            "confidence": 0.95,
+        },
+    ]
+
+    result = batch._suppress_echo_duplicates(utterances)
+
+    assert len(result) == 2
+
+
+def test_echo_dedupe_requires_near_exact_duplicate_text():
+    utterances = [
+        {
+            "speaker": "A",
+            "text": "That model might have to look a few things up.",
+            "start": 1000,
+            "end": 2200,
+            "channel": 0,
+            "confidence": 0.70,
+        },
+        {
+            "speaker": "B",
+            "text": "That model will probably have to look it up.",
+            "start": 1080,
+            "end": 2280,
+            "channel": 1,
+            "confidence": 0.95,
+        },
+    ]
+
+    result = batch._suppress_echo_duplicates(utterances)
+
+    assert len(result) == 2
+
+
+def test_echo_dedupe_requires_meaningful_confidence_gap():
+    utterances = [
+        {
+            "speaker": "A",
+            "text": "That model will probably have to look it up.",
+            "start": 1000,
+            "end": 2200,
+            "channel": 0,
+            "confidence": 0.83,
+        },
+        {
+            "speaker": "B",
+            "text": "That model will probably have to look it up.",
+            "start": 1070,
+            "end": 2190,
+            "channel": 1,
+            "confidence": 0.90,
+        },
+    ]
+
+    result = batch._suppress_echo_duplicates(utterances)
+
+    assert len(result) == 2
+
+
+def test_echo_dedupe_never_suppresses_long_mic_utterances():
+    utterances = [
+        {
+            "speaker": "A",
+            "text": "I think the important thing here is that the model should know when it does not know something and then look it up carefully.",
+            "start": 1000,
+            "end": 4200,
+            "channel": 0,
+            "confidence": 0.60,
+        },
+        {
+            "speaker": "B",
+            "text": "I think the important thing here is that the model should know when it does not know something and then look it up carefully.",
+            "start": 1090,
+            "end": 4180,
+            "channel": 1,
+            "confidence": 0.94,
+        },
+    ]
+
+    result = batch._suppress_echo_duplicates(utterances)
+
+    assert len(result) == 2

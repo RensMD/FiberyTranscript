@@ -38,6 +38,7 @@ class SessionResults:
         self._transcript_sent: bool = False
         self._summary_sent: bool = False
         self._user_has_copied: bool = False
+        self._audio_uploaded: bool = False
 
         # In-flight guard flags (Decision E — prevent duplicate sends)
         self._transcript_sending: bool = False
@@ -64,6 +65,18 @@ class SessionResults:
         with self._lock:
             return self._cleaned_transcript
 
+    def reset_transcription_outputs(self) -> None:
+        """Clear transcript + summary artifacts before retranscribing the same audio."""
+        with self._lock:
+            self._batch_result = None
+            self._cleaned_transcript = None
+            self._generated_summary = None
+            self._transcript_sent = False
+            self._summary_sent = False
+            self._user_has_copied = False
+            self._transcript_sending = False
+            self._summary_sending = False
+
     # --- Summary ---
 
     def set_generated_summary(self, text: str) -> None:
@@ -83,6 +96,10 @@ class SessionResults:
     def get_summary_sent(self) -> bool:
         with self._lock:
             return self._summary_sent
+
+    def get_audio_uploaded(self) -> bool:
+        with self._lock:
+            return self._audio_uploaded
 
     def set_user_has_copied(self) -> None:
         with self._lock:
@@ -128,9 +145,11 @@ class SessionResults:
             self._audio_uploading = True
             return True
 
-    def finish_audio_upload(self) -> None:
+    def finish_audio_upload(self, success: bool = True) -> None:
         with self._lock:
             self._audio_uploading = False
+            if success:
+                self._audio_uploaded = True
 
 
 class RecordingSession:

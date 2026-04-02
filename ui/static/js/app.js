@@ -34,10 +34,17 @@ let fiberyValidated = false;      // true once the link has been validated
 let currentFiberyUrl = '';        // the validated URL
 let generatedSummary = '';        // cached summary text from last successful summarize
 let linkedTranscriptText = '';    // transcript pulled from the linked Fibery meeting
-let selectedUploadPath = null;    // path to browsed audio file
+let selectedUploadPath = null;    // path to the currently staged audio file
+let preparedAudio = null;         // staged recording/upload waiting for transcription
 let currentEntityDb = '';         // entity database name (for Files support check)
 let summarizeInProgress = false;  // true while Gemini summary is running
 let summarizeRetryPending = false;
+let summarizeStartedAt = 0;
+let summarizeProgressTimer = null;
+let hasCompletedSummary = false;
+let transcriptionInProgress = false;
+let hasCompletedTranscription = false;
+const IMPROVE_TRANSCRIPT_WITH_CONTEXT = true;
 
 // --- DOM elements ---
 const recordBtn = document.getElementById('recordBtn');
@@ -69,9 +76,9 @@ let panelCurrentUrl = '';   // Current URL in the Fibery panel
 
 // Collapsible elements
 const audioStorageCollapsible = document.getElementById('audioStorageCollapsible');
-const transcriptModeCollapsible = document.getElementById('transcriptModeCollapsible');
 const recordingMetaCollapsible = document.getElementById('recordingMetaCollapsible');
 const uploadCollapsible = document.getElementById('uploadCollapsible');
+const transcribePanelCollapsible = document.getElementById('transcribePanelCollapsible');
 const sendPanelCollapsible = document.getElementById('sendPanelCollapsible');
 const newMeetingBtn = document.getElementById('newMeetingBtn');
 const retryBatchBtn = document.getElementById('retryBatchBtn');
@@ -89,12 +96,13 @@ const browseAudioBtn = document.getElementById('browseAudioBtn');
 const uploadFileInfoEl = document.getElementById('uploadFileInfo');
 const uploadFileName = document.getElementById('uploadFileName');
 const uploadFileMeta = document.getElementById('uploadFileMeta');
-const uploadTranscriptMode = document.getElementById('uploadTranscriptMode');
 const clearUploadBtn = document.getElementById('clearUploadBtn');
-const transcribeBtn = document.getElementById('transcribeBtn');
 const uploadDivider = document.getElementById('uploadDivider');
 const uploadControls = document.getElementById('uploadControls');
 const audioStorageHint = document.getElementById('audioStorageHint');
+
+// Step 3 - Transcribe
+const transcribeBtn = document.getElementById('transcribeBtn');
 
 // Step 3 – AI summary
 const additionalPrompt = document.getElementById('additionalPrompt');
@@ -102,7 +110,6 @@ const sendActions = document.getElementById('sendActions');
 const summarizeBtn = document.getElementById('summarizeBtn');
 const summaryStatusRow = document.getElementById('summaryStatusRow');
 const summaryStatusBadge = document.getElementById('summaryStatusBadge');
-const copySummaryStatusBtn = document.getElementById('copySummaryStatusBtn');
 const copyTranscriptBtn = document.getElementById('copyTranscriptBtn');
 const copySummaryBtn = document.getElementById('copySummaryBtn');
 const retryRow = document.getElementById('retryRow');
@@ -125,9 +132,7 @@ window.addEventListener('pywebviewready', async () => {
 
 async function initApp() {
     await loadDevices();
-    await autoSelectDevices();
-    startMonitoring();
-    window.pywebview.api.start_background_scanning();
+    await autoDetectDevicesOnce();
 
     // Open entity panel with default workspace URL from backend config
     window.pywebview.api.open_entity_panel();
@@ -180,31 +185,69 @@ document.getElementById('setupSaveBtn').addEventListener('click', async () => {
     }
 });
 
+function populateDeviceOptions(devices) {
+    micSelect.innerHTML = '<option value="">-- Select Microphone --</option>';
+    for (const dev of devices.microphones) {
+        const opt = document.createElement('option');
+        opt.value = dev.index;
+        opt.textContent = dev.name;
+        micSelect.appendChild(opt);
+    }
+
+    loopbackSelect.innerHTML = '<option value="">-- Select Speaker Output --</option>';
+    for (const dev of devices.loopbacks) {
+        const opt = document.createElement('option');
+        opt.value = dev.index;
+        opt.textContent = dev.name;
+        loopbackSelect.appendChild(opt);
+    }
+
+    if (devices.microphones.length > 0) micSelect.value = devices.microphones[0].index;
+    if (devices.loopbacks.length > 0) loopbackSelect.value = devices.loopbacks[0].index;
+}
+
 async function loadDevices() {
     try {
         const devices = await window.pywebview.api.get_audio_devices();
-
-        micSelect.innerHTML = '<option value="">-- Select Microphone --</option>';
-        for (const dev of devices.microphones) {
-            const opt = document.createElement('option');
-            opt.value = dev.index;
-            opt.textContent = dev.name;
-            micSelect.appendChild(opt);
-        }
-
-        loopbackSelect.innerHTML = '<option value="">-- Select Speaker Output --</option>';
-        for (const dev of devices.loopbacks) {
-            const opt = document.createElement('option');
-            opt.value = dev.index;
-            opt.textContent = dev.name;
-            loopbackSelect.appendChild(opt);
-        }
-
-        if (devices.microphones.length > 0) micSelect.value = devices.microphones[0].index;
-        if (devices.loopbacks.length > 0) loopbackSelect.value = devices.loopbacks[0].index;
+        populateDeviceOptions(devices);
     } catch (err) {
         console.error('Failed to load devices:', err);
     }
+}
+
+async function refreshDeviceList({ reinitializeBackends = false, preserveSelection = true } = {}) {
+    if (isRecording || transcriptionInProgress) {
+        return false;
+    }
+
+    const prevMic = micSelect.value;
+    const prevLoop = loopbackSelect.value;
+
+    try {
+        const devices = reinitializeBackends
+            ? await window.pywebview.api.refresh_audio_devices()
+            : await window.pywebview.api.get_audio_devices();
+        if (devices.error || (devices.microphones.length === 0 && devices.loopbacks.length === 0)) {
+            console.warn('Device refresh returned error or empty, keeping current list');
+            return false;
+        }
+
+        populateDeviceOptions(devices);
+    } catch (err) {
+        console.warn('Device refresh failed, keeping current list:', err);
+        return false;
+    }
+
+    if (preserveSelection) {
+        if (prevMic && micSelect.querySelector(`option[value="${prevMic}"]`)) {
+            micSelect.value = prevMic;
+        }
+        if (prevLoop && loopbackSelect.querySelector(`option[value="${prevLoop}"]`)) {
+            loopbackSelect.value = prevLoop;
+        }
+    }
+
+    return true;
 }
 
 async function autoSelectDevices() {
@@ -239,6 +282,17 @@ async function autoSelectDevices() {
     } catch (err) {
         console.warn('Device auto-detection failed, using defaults:', err);
     }
+}
+
+async function autoDetectDevicesOnce({ refreshDevices = false } = {}) {
+    if (isRecording || transcriptionInProgress) return;
+
+    if (refreshDevices) {
+        await refreshDeviceList({ reinitializeBackends: true, preserveSelection: true });
+    }
+
+    await autoSelectDevices();
+    await startMonitoring();
 }
 
 async function loadSettings() {
@@ -293,6 +347,10 @@ function setAudioSourceToolsHidden(hidden) {
     refreshDevicesBtn.classList.toggle('hidden', hidden);
 }
 
+function hasPreparedAudio() {
+    return Boolean(preparedAudio && preparedAudio.file_path);
+}
+
 function getSelectedTranscriptMode() {
     const selected = document.querySelector('input[name="transcriptMode"]:checked');
     return selected ? selected.value : 'append';
@@ -301,9 +359,7 @@ function getSelectedTranscriptMode() {
 function syncTranscriptModeInputs(value) {
     const normalized = value === 'replace' ? 'replace' : 'append';
     const mainRadio = document.getElementById(normalized === 'append' ? 'modeAppend' : 'modeReplace');
-    const uploadRadio = document.getElementById(normalized === 'append' ? 'uploadModeAppend' : 'uploadModeReplace');
     if (mainRadio) mainRadio.checked = true;
-    if (uploadRadio) uploadRadio.checked = true;
 }
 
 function applyTranscriptMode(value) {
@@ -313,12 +369,73 @@ function applyTranscriptMode(value) {
 
 function setSelectedUploadUiVisible(visible) {
     uploadFileInfoEl.classList.toggle('hidden', !visible);
-    uploadTranscriptMode.classList.toggle('hidden', !visible);
-    transcribeBtn.classList.toggle('hidden', !visible);
-    if (visible) {
-        syncTranscriptModeInputs(getSelectedTranscriptMode());
-    }
+    audioStorageCollapsible.classList.toggle('collapsed', !visible);
+    uploadDivider.classList.toggle('hidden', visible);
 }
+
+function updateTranscribeButton(progressText = '') {
+    transcribeBtn.classList.toggle('processing', transcriptionInProgress);
+    transcribeBtn.disabled = !hasPreparedAudio() || transcriptionInProgress;
+    if (transcriptionInProgress) {
+        transcribeBtn.textContent = progressText || 'Transcribing...';
+        return;
+    }
+    transcribeBtn.textContent = hasCompletedTranscription ? 'Retranscribe' : 'Transcribe';
+}
+
+function clearSummaryForRetranscribe() {
+    generatedSummary = '';
+    hasCompletedSummary = false;
+    copySummaryBtn.disabled = true;
+    summarizeRetryPending = false;
+    summarizeInProgress = false;
+    retryTranscriptBtn.style.display = 'none';
+    retryAudioUploadBtn.style.display = 'none';
+    retryRow.classList.add('hidden');
+    retryBatchBtn.style.display = 'none';
+    _lastFailedWavPath = '';
+    setFiberyStatus('', '');
+}
+
+function applyPreparedAudio(info) {
+    if (!info || !info.file_path) return;
+
+    preparedAudio = info;
+    selectedUploadPath = info.file_path;
+    hasCompletedTranscription = false;
+    transcriptionInProgress = false;
+
+    uploadFileName.textContent = info.file_name || info.file_path.replace(/\\/g, '/').split('/').pop();
+    uploadFileMeta.textContent = formatAudioFileInfo(info);
+    clearUploadBtn.classList.remove('hidden');
+    clearUploadBtn.disabled = false;
+    browseAudioBtn.classList.add('hidden');
+    uploadCollapsible.classList.remove('collapsed');
+    recordingMetaCollapsible.classList.add('collapsed');
+    setSelectedUploadUiVisible(true);
+    transcribePanelCollapsible.classList.remove('collapsed');
+    sendPanelCollapsible.classList.remove('collapsed');
+    setAudioSourceToolsHidden(true);
+    updateTranscribeButton();
+    setStatus('completed');
+    updateSummaryActionsState();
+}
+
+function clearPreparedAudioUi() {
+    preparedAudio = null;
+    selectedUploadPath = null;
+    hasCompletedTranscription = false;
+    transcriptionInProgress = false;
+    uploadFileName.textContent = '';
+    uploadFileMeta.textContent = '';
+    browseAudioBtn.classList.remove('hidden');
+    clearUploadBtn.classList.add('hidden');
+    setSelectedUploadUiVisible(false);
+    transcribePanelCollapsible.classList.add('collapsed');
+    updateTranscribeButton();
+}
+
+updateTranscribeButton();
 
 // === File Upload (Browse & Transcribe) ===
 browseAudioBtn.addEventListener('click', async () => {
@@ -342,36 +459,52 @@ browseAudioBtn.addEventListener('click', async () => {
             return;
         }
 
-        selectedUploadPath = filePath;
+        browseAudioBtn.disabled = true;
+        browseAudioBtn.querySelector('span').textContent = 'Preparing...';
 
-        // Show Step 3 (AI Summary) when file is selected
-        sendPanelCollapsible.classList.remove('collapsed');
+        const prepared = await window.pywebview.api.prepare_uploaded_audio(filePath);
+        browseAudioBtn.disabled = false;
+        browseAudioBtn.querySelector('span').textContent = 'Browse Audio File';
 
-        // Show file info
-        const fileName = filePath.replace(/\\/g, '/').split('/').pop();
-        uploadFileName.textContent = fileName;
-        uploadFileMeta.textContent = formatAudioFileInfo(validation);
-        setSelectedUploadUiVisible(true);
-        browseAudioBtn.classList.add('hidden');
+        if (!prepared.success) {
+            showToast('Could not prepare audio: ' + prepared.error, 'error');
+            return;
+        }
+
+        clearSummaryForRetranscribe();
+        applyPreparedAudio(prepared.prepared_audio || validation);
     } catch (err) {
         showToast('Error: ' + err, 'error');
+        browseAudioBtn.disabled = false;
+        browseAudioBtn.querySelector('span').textContent = 'Browse Audio File';
     }
 });
 
-clearUploadBtn.addEventListener('click', () => {
-    selectedUploadPath = null;
-    setSelectedUploadUiVisible(false);
-    browseAudioBtn.classList.remove('hidden');
+clearUploadBtn.addEventListener('click', async () => {
+    try {
+        await callApi('clear_prepared_audio');
+    } catch (err) {
+        showToast('Could not clear staged audio: ' + err, 'error');
+        return;
+    }
+    clearPreparedAudioUi();
+    setAudioSourceToolsHidden(false);
+    setStatus('', '');
+    startMonitoring();
+    updateSummaryActionsState();
 });
 
 transcribeBtn.addEventListener('click', async () => {
-    if (!selectedUploadPath) return;
+    if (!hasPreparedAudio()) return;
 
-    transcribeBtn.disabled = true;
-    transcribeBtn.textContent = 'Starting...';
-    setStatus('processing', 'Processing');
-    setSelectedUploadUiVisible(false);
-    uploadCollapsible.classList.add('collapsed');
+    transcriptionInProgress = true;
+    hasCompletedTranscription = false;
+    updateTranscribeButton('Starting...');
+    clearSummaryForRetranscribe();
+    if (window.transcriptManager?.clear) {
+        window.transcriptManager.clear();
+    }
+    linkedTranscriptText = fiberyValidated ? linkedTranscriptText : '';
 
     // Warn if no meeting selected
     if (!fiberyValidated) {
@@ -379,25 +512,27 @@ transcribeBtn.addEventListener('click', async () => {
     }
 
     try {
-        const result = await window.pywebview.api.upload_and_transcribe(selectedUploadPath);
+        const result = await window.pywebview.api.start_transcription(
+            false,
+            IMPROVE_TRANSCRIPT_WITH_CONTEXT,
+            getSelectedTranscriptMode(),
+        );
         if (!result.success) {
             showToast('Failed: ' + result.error, 'error');
-            setStatus('', 'Error');
-            uploadCollapsible.classList.remove('collapsed');
-            setSelectedUploadUiVisible(true);
-            transcribeBtn.disabled = false;
-            transcribeBtn.textContent = 'Transcribe';
+            transcriptionInProgress = false;
+            updateTranscribeButton();
             return;
         }
+        if (result.transcript_mode) {
+            syncTranscriptModeInputs(result.transcript_mode);
+        }
         clearUploadBtn.disabled = true;
-        setAudioSourceToolsHidden(true);
+        clearUploadBtn.classList.add('hidden');
+        updateSummaryActionsState();
     } catch (err) {
         showToast('Error: ' + err, 'error');
-        setStatus('', 'Error');
-        uploadCollapsible.classList.remove('collapsed');
-        setSelectedUploadUiVisible(true);
-        transcribeBtn.disabled = false;
-        transcribeBtn.textContent = 'Transcribe';
+        transcriptionInProgress = false;
+        updateTranscribeButton();
     }
 });
 
@@ -425,11 +560,15 @@ function formatFileSize(bytes) {
 
 // === Fibery Audio Upload Callbacks ===
 window.onAudioUploadedToFibery = function() {
+    transcriptionInProgress = false;
+    updateTranscribeButton();
+    updateSummaryActionsState();
     showToast('Audio recording uploaded to Fibery', 'success');
     retryAudioUploadBtn.style.display = 'none';
 };
 
 window.onAudioUploadError = function(message) {
+    transcriptionInProgress = false;
     const isEntityDeleted = message && (message.includes('not found') || message.includes('Not found'));
     if (isEntityDeleted) {
         showToast('Meeting was deleted in Fibery. Select a new meeting and retry the upload.', 'error', 10000);
@@ -438,10 +577,8 @@ window.onAudioUploadError = function(message) {
     }
     retryAudioUploadBtn.style.display = '';
     retryRow.classList.remove('hidden');
-    // Reset button text (may be stuck on "Uploading audio to Fibery...")
-    if (recordBtn.classList.contains('completed')) {
-        recordBtnText.textContent = 'Done';
-    }
+    updateTranscribeButton();
+    updateSummaryActionsState();
 };
 
 // === Audio Health ===
@@ -533,39 +670,17 @@ async function switchSources() {
 
 // === Refresh Devices Button ===
 refreshDevicesBtn.addEventListener('click', async () => {
-    if (isRecording) return;
+    if (isRecording || transcriptionInProgress) return;
     refreshDevicesBtn.disabled = true;
     refreshDevicesBtn.classList.add('spinning');
-    const currentMic = micSelect.value;
-    const currentLoop = loopbackSelect.value;
-
-    // Re-initialize audio backends to detect newly connected devices
     try {
-        const devices = await window.pywebview.api.refresh_audio_devices();
-        micSelect.innerHTML = '<option value="">-- Select Microphone --</option>';
-        for (const dev of devices.microphones) {
-            const opt = document.createElement('option');
-            opt.value = dev.index;
-            opt.textContent = dev.name;
-            micSelect.appendChild(opt);
-        }
-        loopbackSelect.innerHTML = '<option value="">-- Select Speaker Output --</option>';
-        for (const dev of devices.loopbacks) {
-            const opt = document.createElement('option');
-            opt.value = dev.index;
-            opt.textContent = dev.name;
-            loopbackSelect.appendChild(opt);
-        }
+        await autoDetectDevicesOnce({ refreshDevices: true });
     } catch (err) {
         console.error('Failed to refresh devices:', err);
-        await loadDevices();
+    } finally {
+        refreshDevicesBtn.disabled = false;
+        refreshDevicesBtn.classList.remove('spinning');
     }
-
-    if (micSelect.querySelector(`option[value="${currentMic}"]`)) micSelect.value = currentMic;
-    if (loopbackSelect.querySelector(`option[value="${currentLoop}"]`)) loopbackSelect.value = currentLoop;
-    refreshDevicesBtn.disabled = false;
-    refreshDevicesBtn.classList.remove('spinning');
-    startMonitoring();
 });
 
 // === Step 1: Fibery Meeting Selection ===
@@ -646,14 +761,15 @@ function getEffectiveTranscriptText() {
 }
 
 function updateSummaryActionsState(scrollIntoView = false) {
+    const hasTranscript = hasEffectiveTranscript();
+    const summaryBlockedByCoreTranscription = transcriptionInProgress && !hasCompletedTranscription;
     const shouldShowActions =
         !isRecording &&
-        !recordBtn.classList.contains('processing') &&
-        (fiberyValidated || hasLocalTranscript());
+        !summaryBlockedByCoreTranscription &&
+        (fiberyValidated || hasTranscript);
 
     sendActions.classList.toggle('visible', shouldShowActions);
 
-    const hasTranscript = hasEffectiveTranscript();
     applySummarizeButtonState(hasTranscript);
     copyTranscriptBtn.disabled = !hasTranscript;
     copySummaryBtn.disabled = !generatedSummary;
@@ -668,12 +784,44 @@ function applySummarizeButtonState(hasTranscript = hasEffectiveTranscript()) {
 
     if (summarizeInProgress) {
         summarizeBtn.disabled = true;
-        summarizeBtn.textContent = 'Summarizing...';
+        summarizeBtn.textContent = formatSummarizeLabel();
         return;
     }
 
     summarizeBtn.disabled = !hasTranscript;
-    summarizeBtn.textContent = summarizeRetryPending ? 'Retry Summary' : 'Summarize';
+    summarizeBtn.textContent = summarizeRetryPending
+        ? 'Retry Summary'
+        : (hasCompletedSummary ? 'Resummarize' : 'Summarize');
+}
+
+function formatSummarizeLabel() {
+    if (!summarizeStartedAt) return 'Summarizing...';
+
+    const elapsedSeconds = Math.max(0, Math.floor((Date.now() - summarizeStartedAt) / 1000));
+    if (elapsedSeconds < 10) return 'Summarizing...';
+
+    const mins = Math.floor(elapsedSeconds / 60);
+    const secs = elapsedSeconds % 60;
+    if (mins > 0) {
+        return `Summarizing (${mins}m ${secs}s)...`;
+    }
+    return `Summarizing (${secs}s)...`;
+}
+
+function startSummarizeProgressTimer() {
+    stopSummarizeProgressTimer();
+    summarizeStartedAt = Date.now();
+    summarizeProgressTimer = setInterval(() => {
+        applySummarizeButtonState();
+    }, 1000);
+}
+
+function stopSummarizeProgressTimer() {
+    summarizeStartedAt = 0;
+    if (summarizeProgressTimer) {
+        clearInterval(summarizeProgressTimer);
+        summarizeProgressTimer = null;
+    }
 }
 
 function applyLinkedEntity(result, entityUrl) {
@@ -697,13 +845,11 @@ function applyLinkedEntity(result, entityUrl) {
     createMeetingFields.classList.add('hidden');
     setFiberyValidateStatus('', '');
     updateAudioStorageState();
-    refreshDeviceList();
     sendPanelCollapsible.classList.remove('collapsed');
     updateSummaryActionsState();
 
-    if (isRecording) {
+    if (hasPreparedAudio()) {
         audioStorageCollapsible.classList.remove('collapsed');
-        transcriptModeCollapsible.classList.remove('collapsed');
     }
 
     if (result.pending_summary && sendActions.classList.contains('visible')) {
@@ -750,6 +896,8 @@ async function selectMeetingFromPanel() {
                     return;
                 }
             }
+
+            await autoDetectDevicesOnce();
 
         } else if (result.needs_disambiguation) {
             fiberyDisambiguation.classList.remove('hidden');
@@ -821,6 +969,8 @@ async function createMeeting(meetingType) {
             if (result.warning) {
                 showToast(result.warning, 'warning', 8000);
             }
+
+            await autoDetectDevicesOnce();
         } else {
             setFiberyValidateStatus('Error: ' + result.error, 'error');
         }
@@ -849,7 +999,7 @@ function resetFiberyValidation() {
     setFiberyValidateStatus('', '');
     updateSelectButtonState();
     updateAudioStorageState();
-    if (!hasLocalTranscript() && !selectedUploadPath && !isRecording && !recordBtn.classList.contains('processing')) {
+    if (!hasLocalTranscript() && !hasPreparedAudio() && !isRecording && !transcriptionInProgress) {
         sendPanelCollapsible.classList.add('collapsed');
     }
     updateSummaryActionsState();
@@ -857,16 +1007,17 @@ function resetFiberyValidation() {
 
 changeLinkBtn.addEventListener('click', async () => {
     // Block meeting changes during processing (allowed during recording)
-    if (recordBtn.classList.contains('processing')) {
+    if (transcriptionInProgress) {
         showToast('Cannot change meeting while processing.', 'warning');
         return;
     }
     await window.pywebview.api.deselect_meeting();
     resetFiberyValidation();
     // Re-collapse toggles when meeting deselected
-    audioStorageCollapsible.classList.add('collapsed');
-    transcriptModeCollapsible.classList.add('collapsed');
-    if (!hasLocalTranscript() && !selectedUploadPath) {
+    if (!hasPreparedAudio()) {
+        audioStorageCollapsible.classList.add('collapsed');
+    }
+    if (!hasLocalTranscript() && !hasPreparedAudio()) {
         sendPanelCollapsible.classList.add('collapsed');
     }
     // Show warning if deselected during recording
@@ -882,7 +1033,7 @@ function setFiberyValidateStatus(text, type) {
 
 // === New Meeting / Reset Session ===
 newMeetingBtn.addEventListener('click', async () => {
-    if (isRecording || recordBtn.classList.contains('processing')) {
+    if (isRecording || transcriptionInProgress) {
         if (!confirm('Processing is still running. Discarding will lose your transcript. Continue?')) {
             return;
         }
@@ -905,7 +1056,6 @@ async function resetSession() {
     const storageRadio = document.querySelector(`input[name="audioStorage"][value="${defaultStorage}"]`);
     if (storageRadio) storageRadio.checked = true;
     audioStorageCollapsible.classList.add('collapsed');
-    transcriptModeCollapsible.classList.add('collapsed');
     // Reset transcript mode to append
     const appendRadio = document.getElementById('modeAppend');
     if (appendRadio) appendRadio.checked = true;
@@ -926,6 +1076,7 @@ async function resetSession() {
 
     // Show upload section, collapse Step 3
     uploadCollapsible.classList.remove('collapsed');
+    transcribePanelCollapsible.classList.add('collapsed');
     sendPanelCollapsible.classList.add('collapsed');
 
     // Clear text fields
@@ -934,27 +1085,15 @@ async function resetSession() {
     updateCreateMeetingButtons();
 
     // Reset upload state
-    selectedUploadPath = null;
-    setSelectedUploadUiVisible(false);
-    transcribeBtn.disabled = false;
-    transcribeBtn.textContent = 'Transcribe';
+    clearPreparedAudioUi();
     clearUploadBtn.disabled = false;
-    browseAudioBtn.classList.remove('hidden');
+    clearUploadBtn.classList.add('hidden');
 
     // Reset summary and retry state
-    generatedSummary = '';
+    clearSummaryForRetranscribe();
     sendActions.classList.remove('visible');
-    setFiberyStatus('', '');
-    copySummaryBtn.disabled = true;
     copyTranscriptBtn.disabled = true;
-    summarizeInProgress = false;
-    summarizeRetryPending = false;
     applySummarizeButtonState(false);
-    retryTranscriptBtn.style.display = 'none';
-    retryAudioUploadBtn.style.display = 'none';
-    retryRow.classList.add('hidden');
-    retryBatchBtn.style.display = 'none';
-    _lastFailedWavPath = '';
 
     // Clear warnings
     fiberyMissingWarning.classList.add('hidden');
@@ -966,7 +1105,7 @@ recordBtn.addEventListener('click', async () => {
     // Debounce: prevent rapid double-click from starting then immediately stopping
     if (_recordActionPending) return;
     // Ignore clicks when button is in processing/completed state
-    if (recordBtn.classList.contains('processing') || recordBtn.classList.contains('completed')) return;
+    if (transcriptionInProgress || recordBtn.classList.contains('completed')) return;
     _recordActionPending = true;
     try {
         if (!isRecording) {
@@ -1007,12 +1146,6 @@ document.querySelectorAll('input[name="transcriptMode"]').forEach(radio => {
     });
 });
 
-document.querySelectorAll('input[name="uploadTranscriptMode"]').forEach(radio => {
-    radio.addEventListener('change', (e) => {
-        applyTranscriptMode(e.target.value);
-    });
-});
-
 // --- Summary Mode Toggle ---
 document.querySelectorAll('input[name="summaryMode"]').forEach(radio => {
     radio.addEventListener('change', (e) => {
@@ -1038,14 +1171,10 @@ async function startRecording() {
     recordingMetaCollapsible.classList.remove('collapsed');
     uploadCollapsible.classList.add('collapsed');
 
-    // Show Step 3 (AI Summary)
+    // Hide downstream sections until the file is prepared
     sendPanelCollapsible.classList.remove('collapsed');
-
-    // Show audio storage and transcript mode if meeting is linked
-    if (fiberyValidated) {
-        audioStorageCollapsible.classList.remove('collapsed');
-        transcriptModeCollapsible.classList.remove('collapsed');
-    }
+    transcribePanelCollapsible.classList.add('collapsed');
+    audioStorageCollapsible.classList.add('collapsed');
 
     timerAccumulatedMs = 0;
     startTimer();
@@ -1070,7 +1199,6 @@ async function startRecording() {
                     recordingMetaCollapsible.classList.add('collapsed');
                     uploadCollapsible.classList.remove('collapsed');
                     audioStorageCollapsible.classList.add('collapsed');
-                    transcriptModeCollapsible.classList.add('collapsed');
                     return;
                 }
             }
@@ -1083,7 +1211,6 @@ async function startRecording() {
             recordingMetaCollapsible.classList.add('collapsed');
             uploadCollapsible.classList.remove('collapsed');
             audioStorageCollapsible.classList.add('collapsed');
-            transcriptModeCollapsible.classList.add('collapsed');
             sendPanelCollapsible.classList.add('collapsed');
             showToast('Could not acquire recording lock: ' + err, 'error');
             return;
@@ -1106,7 +1233,6 @@ async function startRecording() {
         uploadCollapsible.classList.remove('collapsed');
         sendPanelCollapsible.classList.add('collapsed');
         audioStorageCollapsible.classList.add('collapsed');
-        transcriptModeCollapsible.classList.add('collapsed');
         // Release lock if we acquired one
         try { await callApi('release_recording_lock'); } catch (_) {}
     }
@@ -1115,12 +1241,19 @@ async function startRecording() {
 async function stopRecording() {
     freezeTimer();
     try {
-        await callApi('stop_recording');
+        const result = await callApi('stop_recording');
         // Only transition UI on success
         isRecording = false;
         audioHealthEl.classList.add('hidden');
-        setStatus('processing', 'Processing...');
-        setAudioSourceToolsHidden(true);
+        if (result.prepared_audio && result.prepared_audio.file_path) {
+            clearSummaryForRetranscribe();
+            applyPreparedAudio(result.prepared_audio);
+        } else {
+            setStatus('', '');
+            setAudioSourceToolsHidden(false);
+            uploadCollapsible.classList.remove('collapsed');
+            startMonitoring();
+        }
     } catch (err) {
         startTimer();
         // Stop failed — backend is STILL RECORDING. Keep UI in recording state.
@@ -1175,35 +1308,56 @@ function setStatus(state, text) {
     if (state) {
         recordBtn.classList.add(state);
     }
+    recordBtn.classList.toggle('hidden', state === 'completed');
     // Update button text for non-recording states
     if (state === 'processing') {
+        newMeetingBtn.classList.add('hidden');
         recordBtnText.textContent = text || 'Processing...';
     } else if (state === 'completed') {
-        recordBtnText.textContent = text || 'Completed';
+        recordBtnText.textContent = 'Start Recording';
         // Show new meeting link in header
         newMeetingBtn.classList.remove('hidden');
     } else if (state === 'recording') {
+        newMeetingBtn.classList.add('hidden');
         recordBtnText.textContent = 'Stop Recording';
     } else {
         // idle / reset
+        newMeetingBtn.classList.add('hidden');
         recordBtnText.textContent = 'Start Recording';
     }
     updateSummaryActionsState();
 }
 
+window.onAudioPrepared = function(info) {
+    isRecording = false;
+    audioHealthEl.classList.add('hidden');
+    stopTimer();
+    if (info && info.file_path) {
+        clearSummaryForRetranscribe();
+        applyPreparedAudio(info);
+        showToast('Audio is ready to transcribe.', 'info', 4000);
+    } else {
+        setStatus('', '');
+        setAudioSourceToolsHidden(false);
+        uploadCollapsible.classList.remove('collapsed');
+        startMonitoring();
+    }
+};
+
 // === Called from Python with progress updates during batch processing ===
 window.onProcessingProgress = function(message) {
-    recordBtnText.textContent = message;
+    transcriptionInProgress = true;
+    updateTranscribeButton(message);
 };
 
 // === Called from Python when processing completes ===
 window.onProcessingComplete = function() {
-    setStatus('completed', 'Done');
-    audioStorageCollapsible.classList.add('collapsed');
-    transcriptModeCollapsible.classList.add('collapsed');
+    transcriptionInProgress = false;
+    hasCompletedTranscription = true;
+    setStatus('completed');
+    updateTranscribeButton();
     showSendActions();
     newMeetingBtn.classList.remove('hidden');
-    const hadUploadedFile = Boolean(selectedUploadPath);
 
     // Warn if transcript is empty (e.g. very short recording with no speech).
     // Check both cleaned text and raw DOM elements — cleaned text can be empty
@@ -1217,26 +1371,19 @@ window.onProcessingComplete = function() {
     startMonitoring();
 
     // Reset upload state but keep section hidden until "New meeting" reset
-    selectedUploadPath = null;
-    setSelectedUploadUiVisible(false);
-    transcribeBtn.disabled = false;
-    transcribeBtn.textContent = 'Transcribe';
     clearUploadBtn.disabled = false;
-    browseAudioBtn.classList.remove('hidden');
-    if (hadUploadedFile) {
-        uploadCollapsible.classList.add('collapsed');
-    }
+    clearUploadBtn.classList.add('hidden');
     // Upload section stays collapsed — revealed on resetSession()
 };
 
 window.onError = function(message) {
-    setStatus('', '');
+    transcriptionInProgress = false;
+    updateTranscribeButton();
     clearUploadBtn.disabled = false;
-    if (selectedUploadPath) {
+    clearUploadBtn.classList.add('hidden');
+    if (hasPreparedAudio()) {
         uploadCollapsible.classList.remove('collapsed');
         setSelectedUploadUiVisible(true);
-        transcribeBtn.disabled = false;
-        transcribeBtn.textContent = 'Transcribe';
     }
     showToast(message, 'error', 8000);
     newMeetingBtn.classList.remove('hidden');
@@ -1244,14 +1391,14 @@ window.onError = function(message) {
 
 let _lastFailedWavPath = '';
 window.onBatchFailed = function(info) {
-    setStatus('', '');
+    transcriptionInProgress = false;
+    updateTranscribeButton();
     sendActions.classList.remove('visible');
     uploadCollapsible.classList.remove('collapsed');
     clearUploadBtn.disabled = false;
-    if (selectedUploadPath) {
+    clearUploadBtn.classList.add('hidden');
+    if (hasPreparedAudio()) {
         setSelectedUploadUiVisible(true);
-        transcribeBtn.disabled = false;
-        transcribeBtn.textContent = 'Transcribe';
     }
     _lastFailedWavPath = (info && info.wav_path) || '';
     if (_lastFailedWavPath) {
@@ -1353,11 +1500,7 @@ window.onDecisionTimerResume = function(accumulatedSeconds) {
 };
 
 window.onAutoStopComplete = function() {
-    isRecording = false;
-    stopTimer();
-    setStatus('processing', 'Processing...');
-    setAudioSourceToolsHidden(true);
-    showToast('Processing recording...', 'info', 5000);
+    showToast('Audio is ready to transcribe.', 'info', 5000);
 };
 
 // === System Sleep / Wake ===
@@ -1376,17 +1519,12 @@ window.onWakeResumeTimer = function(accumulatedSeconds) {
 window.onWakeResumeFailed = function(errorMsg) {
     isRecording = false;
     stopTimer();
-    setStatus('processing', 'Processing...');
-    setAudioSourceToolsHidden(true);
     showToast('Could not resume after sleep: ' + errorMsg, 'warning', 10000);
 };
 
 // Called when recording ends and transitions to processing (e.g., after sleep timeout/failure)
 window.onRecordingEndedForProcessing = function() {
-    isRecording = false;
-    stopTimer();
-    setStatus('processing', 'Processing...');
-    setAudioSourceToolsHidden(true);
+    showToast('Audio is ready to transcribe.', 'info', 5000);
 };
 
 window.onSleepDuringProcessing = function() {
@@ -1394,7 +1532,7 @@ window.onSleepDuringProcessing = function() {
 };
 
 window.onCleanupFailed = function() {
-    showToast('Speaker identification unavailable. Showing raw transcript.', 'info', 6000);
+    showToast('Transcript improvement unavailable. Showing the raw transcript.', 'info', 6000);
 };
 
 // === Device Scan Results (background scanning) ===
@@ -1439,7 +1577,9 @@ function getSummaryStyle() {
 
 // === Transcript auto-send callbacks (triggered from Python after step 2) ===
 window.onTranscriptSentToFibery = function() {
-    setStatus('completed', 'Transcript sent');
+    setStatus('completed');
+    applyTranscriptMode('replace');
+    updateTranscribeButton();
     retryTranscriptBtn.style.display = 'none';
 };
 
@@ -1456,10 +1596,7 @@ window.onTranscriptSendError = function(message) {
     }
     retryTranscriptBtn.style.display = '';
     retryRow.classList.remove('hidden');
-    // Reset button text if stuck
-    if (recordBtn.classList.contains('completed')) {
-        recordBtnText.textContent = 'Done';
-    }
+    updateTranscribeButton();
 };
 
 // === Summarize (step 3) ===
@@ -1471,6 +1608,7 @@ summarizeBtn.addEventListener('click', async () => {
 
     summarizeInProgress = true;
     summarizeRetryPending = false;
+    startSummarizeProgressTimer();
     applySummarizeButtonState(true);
     setFiberyStatus('Summarizing...', '');
 
@@ -1482,6 +1620,7 @@ summarizeBtn.addEventListener('click', async () => {
     } catch (err) {
         summarizeInProgress = false;
         summarizeRetryPending = true;
+        stopSummarizeProgressTimer();
         setFiberyStatus('Error: ' + err, 'error');
         updateSummaryActionsState();
     }
@@ -1490,6 +1629,8 @@ summarizeBtn.addEventListener('click', async () => {
 window.onSummarizeComplete = function(result) {
     summarizeInProgress = false;
     summarizeRetryPending = false;
+    stopSummarizeProgressTimer();
+    hasCompletedSummary = true;
     generatedSummary = (result && result.summary) ? result.summary : '';
     copySummaryBtn.disabled = !generatedSummary;
 
@@ -1507,6 +1648,7 @@ window.onSummarizeComplete = function(result) {
 window.onSummarizeError = function(message) {
     summarizeInProgress = false;
     summarizeRetryPending = true;
+    stopSummarizeProgressTimer();
     setFiberyStatus('Error: ' + message, 'error');
     updateSummaryActionsState();
 };
@@ -1523,12 +1665,8 @@ window.onPendingSummarySendError = function(message) {
 function setFiberyStatus(text, type) {
     summaryStatusBadge.textContent = text || '';
     summaryStatusBadge.className = 'status-badge' + (type ? ' ' + type : '');
-    const hasText = Boolean(text);
-    summaryStatusRow.classList.toggle('hidden', !hasText);
-    if (copySummaryStatusBtn) {
-        copySummaryStatusBtn.textContent = 'Copy Status';
-        copySummaryStatusBtn.classList.toggle('hidden', !hasText);
-    }
+    const shouldShowInlineStatus = Boolean(text) && (type === 'error' || type === 'warning');
+    summaryStatusRow.classList.toggle('hidden', !shouldShowInlineStatus);
 }
 
 // === Retry Handlers ===
@@ -1560,9 +1698,18 @@ retryBatchBtn.addEventListener('click', async () => {
     retryBatchBtn.disabled = true;
     retryBatchBtn.style.display = 'none';
     try {
-        await callApi('upload_and_transcribe', _lastFailedWavPath);
+        transcriptionInProgress = true;
+        updateTranscribeButton('Retrying...');
+        await callApi(
+            'start_transcription',
+            false,
+            IMPROVE_TRANSCRIPT_WITH_CONTEXT,
+            getSelectedTranscriptMode(),
+        );
         _lastFailedWavPath = '';
     } catch (err) {
+        transcriptionInProgress = false;
+        updateTranscribeButton();
         showToast('Retry failed: ' + err, 'error');
         retryBatchBtn.disabled = false;
         retryBatchBtn.style.display = '';
@@ -1592,44 +1739,6 @@ copySummaryBtn.addEventListener('click', () => {
         });
     }
 });
-
-if (copySummaryStatusBtn) {
-    copySummaryStatusBtn.addEventListener('click', () => {
-        const statusText = summaryStatusBadge.textContent;
-        if (statusText) {
-            navigator.clipboard.writeText(statusText).then(() => {
-                copySummaryStatusBtn.textContent = 'Copied!';
-                setTimeout(() => { copySummaryStatusBtn.textContent = 'Copy Status'; }, 2000);
-            });
-        }
-    });
-}
-
-// === On-Demand Device Refresh ===
-async function refreshDeviceList() {
-    if (isRecording || recordBtn.classList.contains('processing') || recordBtn.classList.contains('completed')) {
-        return;
-    }
-    const prevMic = micSelect.value;
-    const prevLoop = loopbackSelect.value;
-    try {
-        const devices = await window.pywebview.api.get_audio_devices();
-        if (devices.error || (devices.microphones.length === 0 && devices.loopbacks.length === 0)) {
-            console.warn('Device refresh returned error or empty, keeping current list');
-            return;
-        }
-        await loadDevices();
-    } catch (err) {
-        console.warn('Device refresh failed, keeping current list:', err);
-        return;
-    }
-    if (prevMic && micSelect.querySelector(`option[value="${prevMic}"]`)) {
-        micSelect.value = prevMic;
-    }
-    if (prevLoop && loopbackSelect.querySelector(`option[value="${prevLoop}"]`)) {
-        loopbackSelect.value = prevLoop;
-    }
-}
 
 // === Update Available Banner ===
 window.onUpdateAvailable = function(info) {

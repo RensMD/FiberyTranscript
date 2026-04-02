@@ -61,3 +61,16 @@ def test_start_monitor_keeps_loopback_capture_off_windows():
     kwargs = app.audio_capture.start_capture.call_args.kwargs
     assert kwargs["mic_device"] == mic
     assert kwargs["loopback_device"] == loop
+
+
+def test_start_monitor_is_noop_when_same_devices_are_already_monitored():
+    app = _make_app()
+    app.audio_capture = MagicMock()
+    app.audio_capture.is_capturing.return_value = True
+    app._selected_mic_index = 1
+    app._selected_sys_index = 2
+
+    app.start_monitor(1, 2)
+
+    app.audio_capture.stop_capture.assert_not_called()
+    app.audio_capture.start_capture.assert_not_called()

@@ -63,6 +63,8 @@ class AudioMixer:
         self._last_loopback_audio_time = now
         self._mic_stall_started: float | None = None
         self._loopback_stall_started: float | None = None
+        self._mic_seen_audio = not has_mic
+        self._loopback_seen_audio = not has_loopback
 
     @property
     def channels(self) -> int:
@@ -76,6 +78,7 @@ class AudioMixer:
         with self._lock:
             now = time.monotonic()
             self._last_mic_audio_time = now
+            self._mic_seen_audio = True
             self._clear_stall(is_mic=True, now=now)
             self._stall_warned_mic = False  # Source is alive again
             self._mic_buffer += pcm_data
@@ -89,6 +92,7 @@ class AudioMixer:
         with self._lock:
             now = time.monotonic()
             self._last_loopback_audio_time = now
+            self._loopback_seen_audio = True
             self._clear_stall(is_mic=False, now=now)
             self._stall_warned_loop = False  # Source is alive again
             self._loopback_buffer += pcm_data
@@ -174,6 +178,11 @@ class AudioMixer:
         last_audio_time = self._last_mic_audio_time if is_mic else self._last_loopback_audio_time
         if (now - last_audio_time) < self._stall_timeout_seconds:
             return False
+
+        if is_mic and not self._mic_seen_audio:
+            return True
+        if not is_mic and not self._loopback_seen_audio:
+            return True
 
         self._mark_stall(is_mic=is_mic, now=now)
         return True

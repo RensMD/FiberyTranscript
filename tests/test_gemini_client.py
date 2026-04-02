@@ -138,6 +138,28 @@ def test_summarize_transcript_falls_back_on_deadline_exceeded(monkeypatch):
     assert [call["model"] for call in client.calls] == ["gemini-pro", "gemini-flash"]
 
 
+def test_summarize_transcript_short_interview_style_adds_tighter_length_limits(monkeypatch):
+    fake_google = _install_fake_google(monkeypatch, ["short summary"])
+
+    summary = gemini_client.summarize_transcript(
+        api_key="test-key",
+        transcript="Speaker A: hello",
+        notes="",
+        is_interview=True,
+        summary_style="short",
+        model="gemini-pro",
+        model_fallback="gemini-flash",
+    )
+
+    assert summary == "short summary"
+    client = fake_google.Client.instances[0]
+    call = client.calls[0]
+    system_instruction = call["config"].kwargs["system_instruction"]
+    assert "Summary style setting: short" in system_instruction
+    assert "Keep it under about 900 characters" in system_instruction
+    assert "at most 2 problem definition suggestions" in system_instruction
+
+
 def test_cleanup_transcript_falls_back_on_deadline_exceeded(monkeypatch):
     fake_google = _install_fake_google(
         monkeypatch,
@@ -158,7 +180,7 @@ def test_cleanup_transcript_falls_back_on_deadline_exceeded(monkeypatch):
     assert client.http_options == {"timeout": gemini_client._CLEANUP_REQUEST_TIMEOUT_MS}
     assert [call["model"] for call in client.calls] == [
         "gemini-cleanup",
-        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-flash-lite",
     ]
 
 
@@ -208,3 +230,29 @@ def test_cleanup_transcript_deletes_uploaded_audio_in_background(monkeypatch, tm
     assert fake_google.Client.instances[1].http_options == {
         "timeout": gemini_client._FILE_DELETE_TIMEOUT_MS
     }
+
+
+def test_cleanup_transcript_treats_company_context_as_glossary_not_attendance(monkeypatch):
+    fake_google = _install_fake_google(monkeypatch, ["cleaned transcript"])
+
+    cleaned = gemini_client.cleanup_transcript(
+        api_key="test-key",
+        transcript="**Speaker A**\nHello there",
+        notes="Participants likely include Rens and Andrej.",
+        meeting_context="Confirmed internal participants in this meeting: Rens\nConfirmed external participants in this meeting: Andrej Karpathy",
+        company_context="Possible people at the company: Alice Example, Bob Example",
+        model="gemini-cleanup",
+    )
+
+    assert cleaned == "cleaned transcript"
+    client = fake_google.Client.instances[0]
+    call = client.calls[0]
+    system_instruction = call["config"].kwargs["system_instruction"]
+    assert "Only replace a generic speaker label with a real name" in system_instruction
+    assert "Never assign a speaker name based only on general company context" in system_instruction
+    assert "keep the source version and remove the echoed duplicate" in system_instruction
+    assert "remove the duplicated portion and keep the unique remainder" in system_instruction
+    assert "prefer keeping Channel 1 and removing the duplicate Channel 0 text" in system_instruction
+    assert "Confirmed meeting-specific context:" in system_instruction
+    assert "General company context (glossary only; not evidence that a person attended this meeting):" in system_instruction
+    assert "Participants likely include Rens and Andrej." in call["contents"]

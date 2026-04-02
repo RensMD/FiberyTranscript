@@ -17,9 +17,11 @@ from app import FiberyTranscriptApp
 from config.settings import Settings
 from ui.api_bridge import ApiBridge
 from ui.window import create_window, start_webview
+from config.constants import APP_VERSION
 from utils.logging_config import setup_logging
 from utils.platform_utils import get_data_dir
 from utils.single_instance import acquire_single_instance_guard
+from utils.webview_cache import refresh_main_webview_cache_if_needed
 
 
 def main():
@@ -46,6 +48,8 @@ def main():
             logger.info("Merged installer preferences into settings")
             settings.save(settings_path)
 
+        refresh_main_webview_cache_if_needed(data_dir, APP_VERSION)
+
         # Create app
         app = FiberyTranscriptApp(settings, data_dir)
 
@@ -59,7 +63,7 @@ def main():
         # Create entity side panel (attached to main window)
         from ui.entity_panel import EntityPanel
 
-        app.entity_panel = EntityPanel(window, settings=app.settings)
+        app.entity_panel = EntityPanel(window, settings=app.settings, notify_js=app._notify_js)
 
         # Start power monitoring for sleep/wake detection
         from utils.power_monitor import create_power_monitor
