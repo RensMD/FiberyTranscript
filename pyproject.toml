@@ -1,6 +1,6 @@
 [project]
 name = "fibery-transcript"
-version = "1.0.1"
+version = "1.4.5"
 description = "Cross-platform audio transcription tool with Fibery integration"
 requires-python = ">=3.11"
 dependencies = [

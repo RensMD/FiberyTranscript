@@ -396,6 +396,18 @@ function getSelectedSummaryLanguage() {
     return selected ? selected.value : 'en';
 }
 
+function getSelectedPromptTypes() {
+    return Array.from(document.querySelectorAll('input[name="promptType"]:checked')).map(el => el.value);
+}
+
+// Show/hide custom prompt textarea when Custom checkbox is toggled
+document.querySelectorAll('input[name="promptType"]').forEach(cb => {
+    cb.addEventListener('change', () => {
+        const customChecked = document.getElementById('promptTypeCustom').checked;
+        document.getElementById('customPromptGroup').classList.toggle('hidden', !customChecked);
+    });
+});
+
 function syncSummaryLanguageInputs(value) {
     const normalized = value === 'nl' ? 'nl' : 'en';
     const radio = document.getElementById(
@@ -905,6 +917,19 @@ function applyLinkedEntity(result, entityUrl) {
 
     problemsRow.classList.toggle('hidden', currentEntityDb !== 'Market Interview');
 
+    // Auto-switch prompt type for interview entities
+    if (currentEntityDb === 'Market Interview') {
+        document.getElementById('promptTypeSummarize').checked = false;
+        document.getElementById('promptTypeInterview').checked = true;
+    } else {
+        document.getElementById('promptTypeSummarize').checked = true;
+        document.getElementById('promptTypeInterview').checked = false;
+    }
+    // Re-sync custom prompt visibility after auto-switch
+    document.getElementById('customPromptGroup').classList.toggle(
+        'hidden', !document.getElementById('promptTypeCustom').checked
+    );
+
     if (result.pending_summary && sendActions.classList.contains('visible')) {
         setFiberyStatus('Sending summary to Fibery...', '');
     }
@@ -1135,8 +1160,13 @@ async function resetSession() {
     transcribePanelCollapsible.classList.add('collapsed');
     sendPanelCollapsible.classList.add('collapsed');
 
-    // Clear text fields
-    additionalPrompt.value = '';
+    // Clear text fields and reset prompt type to default
+    if (additionalPrompt) additionalPrompt.value = '';
+    document.getElementById('promptTypeSummarize').checked = true;
+    document.getElementById('promptTypeInterview').checked = false;
+    document.getElementById('promptTypeShareable').checked = false;
+    document.getElementById('promptTypeCustom').checked = false;
+    document.getElementById('customPromptGroup').classList.add('hidden');
     createMeetingName.value = '';
     updateCreateMeetingButtons();
 
@@ -1683,10 +1713,19 @@ summarizeBtn.addEventListener('click', async () => {
     setFiberyStatus('Summarizing...', '');
 
     try {
-        const customPrompt = additionalPrompt.value.trim();
+        const promptTypes = getSelectedPromptTypes();
+        if (promptTypes.length === 0) {
+            showToast('Select at least one prompt type.', 'warning', 4000);
+            summarizeInProgress = false;
+            stopSummarizeProgressTimer();
+            applySummarizeButtonState(false);
+            return;
+        }
+        const customPrompt = promptTypes.includes('custom') ? (additionalPrompt ? additionalPrompt.value.trim() : '') : '';
         const summaryStyle = getSummaryStyle();
         // Returns immediately — result arrives via onSummarizeComplete/onSummarizeError
         await window.pywebview.api.generate_summary(
+            promptTypes,
             customPrompt,
             summaryStyle,
             getSelectedSummaryLanguage(),

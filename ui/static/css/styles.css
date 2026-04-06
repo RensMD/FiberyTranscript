@@ -789,7 +789,8 @@ textarea::placeholder {
     align-items: stretch;
 }
 
-.summary-style-option input[type="radio"] {
+.summary-style-option input[type="radio"],
+.summary-style-option input[type="checkbox"] {
     position: absolute;
     opacity: 0;
     pointer-events: none;
@@ -818,20 +819,30 @@ textarea::placeholder {
     border-left: none;
 }
 
-.summary-style-option input[type="radio"]:not(:checked) + label:hover {
+.summary-style-option input[type="radio"]:not(:checked) + label:hover,
+.summary-style-option input[type="checkbox"]:not(:checked) + label:hover {
     background: var(--bg-surface);
 }
 
-.summary-style-option input[type="radio"]:checked + label {
+.summary-style-option input[type="radio"]:checked + label,
+.summary-style-option input[type="checkbox"]:checked + label {
     background: var(--accent);
     color: #fff;
     font-weight: 600;
     box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-.summary-style-option input[type="radio"]:focus-visible + label {
+.summary-style-option input[type="radio"]:focus-visible + label,
+.summary-style-option input[type="checkbox"]:focus-visible + label {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+}
+
+.custom-prompt-group {
+    margin-top: 4px;
+}
+.custom-prompt-group.hidden {
+    display: none;
 }
 
 /* === Send Actions (hidden until processing complete) === */

@@ -65,7 +65,7 @@ def test_generate_summary_forwards_summary_language(monkeypatch):
 
     monkeypatch.setattr("ui.api_bridge.threading.Thread", _ImmediateThread)
 
-    result = bridge.generate_summary("prompt", "short", "nl")
+    result = bridge.generate_summary(["summarize"], "prompt", "short", "nl")
 
     assert result["success"] is True
     assert notifications == ['window.onSummarizeComplete({"success": true, "summary": "nl"})']

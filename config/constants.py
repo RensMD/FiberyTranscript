@@ -54,6 +54,13 @@ FIBERY_API_PATH = "/api/commands"
 
 # --- Summarization prompts ---
 
+# Core prompt (always included, cannot be changed by user)
+CORE_PROMPT = """Your task is to analyze the provided user notes and auto-generated transcript. \
+The speakers in the meeting are non English natives (mostly Dutch). The transcript likely contains small talk, \
+misheard words, grammar errors, and mistakes with names; use the meeting context provided to resolve naming ambiguities. \
+The provided notes are written on the fly by meeting participants and may be incomplete, unstructured, or contain errors."""
+
+
 # Default meeting prompt (overwritten when user provides a custom prompt)
 DEFAULT_MEETING_PROMPT = """You are a professional meeting summarizer.\
     Keep the summary clear, professional, and on topic."""
@@ -76,11 +83,26 @@ definition per problem, no mixing of problems.) Follow this template exactly:
 **The downside is:** [Complaints]
 **They are searching for alternatives by:** [Search approach]"""
 
-# Core prompt (always included, cannot be changed by user)
-CORE_PROMPT = """Your task is to analyze the provided user notes and auto-generated transcript. \
-The speakers in the meeting are non English natives (mostly Dutch). The transcript likely contains small talk, \
-misheard words, grammar errors, and mistakes with names; use the meeting context provided to resolve naming ambiguities. \
-The provided notes are written on the fly by meeting participants and may be incomplete, unstructured, or contain errors."""
+# Shareable summary prompt (professional external-facing summary)
+DEFAULT_SHAREABLE_PROMPT = """You are a professional meeting summarizer creating a summary to share with \
+external meeting participants. Focus on key outcomes, decisions, action items with owners, and next steps. \
+Keep it concise and professional. Avoid internal jargon, confidential strategic context, and anything not \
+appropriate for external sharing. Start with a brief meeting overview, then list decisions and action items."""
+
+# Maps prompt type keys to their role prompt constants
+PROMPT_TYPE_PROMPTS = {
+    "summarize": DEFAULT_MEETING_PROMPT,
+    "interview": DEFAULT_INTERVIEW_PROMPT,
+    "shareable": DEFAULT_SHAREABLE_PROMPT,
+}
+
+# Maps prompt type keys to display labels for section headers
+PROMPT_TYPE_LABELS = {
+    "summarize": "Summary",
+    "interview": "Problem Interview",
+    "shareable": "Shareable Summary",
+    "custom": "Custom",
+}
 
 # Transcript cleanup prompt (used by Gemini to clean up raw AssemblyAI output)
 TRANSCRIPT_CLEANUP_PROMPT = """You are a transcript checker. Your task is to clean up \

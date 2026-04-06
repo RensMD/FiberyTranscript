@@ -510,15 +510,25 @@ class ApiBridge:
 
     def generate_summary(
         self,
+        prompt_types=None,
         custom_prompt: str = "",
         summary_style: str = "normal",
         summary_language: str = "en",
     ) -> dict:
         """Generate AI summary from transcript (runs in background). Result via onSummarizeComplete/onSummarizeError."""
+        # pywebview may serialize JS arrays as lists; guard against string serialization
+        if isinstance(prompt_types, str):
+            import json as _json
+            try:
+                prompt_types = _json.loads(prompt_types)
+            except Exception:
+                prompt_types = [prompt_types]
+
         def _background():
             import json
             try:
                 result = self._app.generate_summary(
+                    prompt_types=prompt_types or ["summarize"],
                     custom_prompt=custom_prompt,
                     summary_style=summary_style,
                     summary_language=summary_language,
@@ -543,16 +553,25 @@ class ApiBridge:
     def summarize_to_fibery(
         self,
         fibery_url: str,
+        prompt_types=None,
         custom_prompt: str = "",
         summary_style: str = "normal",
         summary_language: str = "en",
     ) -> dict:
         """Summarize transcript with Gemini and update AI Summary in Fibery (runs in background)."""
+        if isinstance(prompt_types, str):
+            import json as _json
+            try:
+                prompt_types = _json.loads(prompt_types)
+            except Exception:
+                prompt_types = [prompt_types]
+
         def _background():
             import json
             try:
                 result = self._app.send_summary_to_fibery(
                     fibery_url,
+                    prompt_types=prompt_types or ["summarize"],
                     custom_prompt=custom_prompt,
                     summary_style=summary_style,
                     summary_language=summary_language,

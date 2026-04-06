@@ -259,8 +259,30 @@
             <div class="step-body">
                 <!-- Additional instructions for summarization -->
                 <div class="instructions-group">
-                    <label for="additionalPrompt">Instructions for AI <span class="optional-label">optional</span></label>
-                    <textarea id="additionalPrompt" placeholder="Customize the prompt. (Default: You are a professional meeting summarizer. Keep the summary clear, professional, and focused on the topic at hand.)" rows="3"></textarea>
+                    <div class="summary-style-group">
+                        <span class="summary-style-label">Prompt Type</span>
+                        <div class="summary-style-options multi-select" role="group" aria-label="Prompt type">
+                            <div class="summary-style-option">
+                                <input type="checkbox" id="promptTypeSummarize" name="promptType" value="summarize" checked>
+                                <label for="promptTypeSummarize">Summarize</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="checkbox" id="promptTypeInterview" name="promptType" value="interview">
+                                <label for="promptTypeInterview">Problem Interview</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="checkbox" id="promptTypeShareable" name="promptType" value="shareable">
+                                <label for="promptTypeShareable">Shareable</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="checkbox" id="promptTypeCustom" name="promptType" value="custom">
+                                <label for="promptTypeCustom">Custom</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="customPromptGroup" class="custom-prompt-group hidden">
+                        <textarea id="additionalPrompt" placeholder="Enter your custom instructions for the AI summarizer." rows="3"></textarea>
+                    </div>
                     <div class="summary-style-group">
                         <span class="summary-style-label">Summary Style</span>
                         <div class="summary-style-options" role="radiogroup" aria-label="Summary style">

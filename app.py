@@ -18,7 +18,7 @@ from audio.recorder import WavRecorder
 from config.constants import FIBERY_INSTANCE_URL
 from config.keystore import get_key, keys_configured
 from config.settings import Settings
-from session import RecordingSession, SessionContext
+from config.session import RecordingSession, SessionContext
 from transcription.formatter import format_diarized_transcript
 
 logger = logging.getLogger(__name__)
@@ -2716,6 +2716,7 @@ class FiberyTranscriptApp:
 
     def generate_summary(
         self,
+        prompt_types: "list[str] | None" = None,
         custom_prompt: str = "",
         summary_style: str = "normal",
         summary_language: str = "",
@@ -2743,12 +2744,10 @@ class FiberyTranscriptApp:
             # Determine entity context for prompt (notes, interview vs meeting)
             # Use cached entity if available; otherwise use generic defaults
             notes = ""
-            is_interview = False
             meeting_context = ""
             if entity and client:
                 try:
                     notes = client.get_entity_notes(entity)
-                    is_interview = entity.database.lower() == "market interview"
                 except Exception:
                     pass
                 # Build dynamic meeting context from entity
@@ -2758,17 +2757,18 @@ class FiberyTranscriptApp:
                     meeting_context = build_summary_context(entity_ctx)
 
             logger.info(
-                "Generating summary (style=%s, language=%s, has_entity=%s)",
+                "Generating summary (style=%s, language=%s, has_entity=%s, prompt_types=%s)",
                 summary_style,
                 normalized_summary_language,
                 bool(entity),
+                prompt_types,
             )
 
             summary = summarize_transcript(
                 api_key=get_key("gemini_api_key"),
                 transcript=transcript_text,
                 notes=notes,
-                is_interview=is_interview,
+                prompt_types=prompt_types or ["summarize"],
                 custom_prompt=custom_prompt,
                 summary_style=summary_style,
                 summary_language=normalized_summary_language,
@@ -2835,6 +2835,7 @@ class FiberyTranscriptApp:
     def send_summary_to_fibery(
         self,
         fibery_url: str,
+        prompt_types: "list[str] | None" = None,
         custom_prompt: str = "",
         summary_style: str = "normal",
         summary_language: str = "",
@@ -2872,7 +2873,6 @@ class FiberyTranscriptApp:
             logger.info("Summarizing for entity: %s/%s", entity.space, entity.database)
 
             notes = client.get_entity_notes(entity)
-            is_interview = entity.database.lower() == "market interview"
 
             # Build dynamic meeting context
             meeting_context = ""
@@ -2885,7 +2885,7 @@ class FiberyTranscriptApp:
                 api_key=get_key("gemini_api_key"),
                 transcript=transcript_text,
                 notes=notes,
-                is_interview=is_interview,
+                prompt_types=prompt_types or ["summarize"],
                 custom_prompt=custom_prompt,
                 summary_style=summary_style,
                 summary_language=normalized_summary_language,

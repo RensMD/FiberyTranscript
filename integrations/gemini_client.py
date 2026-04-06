@@ -13,6 +13,8 @@ from config.constants import (
     PROBLEM_EXTRACTION_PROMPT,
     PROBLEM_EXTRACTION_SCHEMA,
     PROBLEM_EXTRACTION_USER_TEMPLATE,
+    PROMPT_TYPE_LABELS,
+    PROMPT_TYPE_PROMPTS,
     TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM,
     TRANSCRIPT_CLEANUP_PROMPT,
 )
@@ -94,59 +96,17 @@ def _is_retryable_gemini_error(exc: Exception) -> bool:
     )
 
 
-def summarize_transcript(
-    api_key: str,
-    transcript: str,
-    notes: str,
-    is_interview: bool,
-    custom_prompt: str = "",
-    summary_style: str = "normal",
-    summary_language: str = "en",
-    model: str = "gemini-3.1-pro-preview",
-    model_fallback: str = "gemini-3-flash-preview",
-    company_context: str = "",
-    meeting_context: str = "",
+def _build_system_prompt(
+    role_prompt: str,
+    prompt_type: str,
+    summary_style: str,
+    summary_language: str,
+    company_context: str,
+    meeting_context: str,
 ) -> str:
-    """Summarize a meeting transcript using Google Gemini.
-
-    Args:
-        api_key: Google Gemini API key.
-        transcript: The full meeting transcript text.
-        notes: User notes from Fibery (may be empty).
-        is_interview: True to use interview prompt, False for meeting prompt.
-        custom_prompt: Additional user instructions that replace the default role prompt.
-        summary_style: Output length style: normal, short, or minimal.
-        summary_language: Output language code for the generated summary.
-        company_context: Company-specific context (uses default if empty).
-        meeting_context: Dynamic per-meeting context (participants, orgs).
-
-    Returns:
-        The AI-generated summary text.
-    """
-    from google import genai
-    from google.genai import types
-
-    client = genai.Client(
-        api_key=api_key,
-        http_options={"timeout": _SUMMARY_REQUEST_TIMEOUT_MS},
-    )
-
-    primary_model = model
-    fallback_model = model_fallback
-
-    # Build role prompt: custom_prompt replaces the default when provided.
-    if custom_prompt.strip():
-        role_prompt = custom_prompt.strip()
-    else:
-        role_prompt = DEFAULT_INTERVIEW_PROMPT if is_interview else DEFAULT_MEETING_PROMPT
-
-    # Compose full system prompt: role + core + company context + meeting context + style.
+    """Compose a full Gemini system prompt from role prompt and shared context parameters."""
     context = company_context.strip() if company_context.strip() else DEFAULT_COMPANY_CONTEXT
-    system_prompt = f"""{role_prompt}
-
-{CORE_PROMPT}
-
-{context}"""
+    system_prompt = f"{role_prompt}\n\n{CORE_PROMPT}\n\n{context}"
 
     if meeting_context.strip():
         system_prompt += f"\n\nMeeting participants and context:\n{meeting_context}"
@@ -157,26 +117,30 @@ def summarize_transcript(
         f"\n\nSummary style setting: {normalized_style}\n"
         f"{SUMMARY_STYLE_INSTRUCTIONS[normalized_style]}"
     )
+
     summary_language_name = _LANGUAGE_NAMES.get(summary_language, "English")
     system_prompt += (
         f"\n\nOutput language: {summary_language_name}. "
         f"Write the entire summary in {summary_language_name}. "
         "Do not translate the transcript itself; only summarize it in the requested language."
     )
-    if is_interview and normalized_style == "short":
+
+    if prompt_type == "interview" and normalized_style == "short":
         system_prompt += (
             "\nBecause the summary style is short, include at most 2 problem definition suggestions "
             "and omit that section entirely if the evidence is weak, repetitive, or low-value."
         )
-    elif is_interview and normalized_style == "minimal":
+    elif prompt_type == "interview" and normalized_style == "minimal":
         system_prompt += (
             "\nBecause the summary style is minimal, include at most 1 problem definition suggestion "
             "and omit it entirely unless it is especially strong and clearly supported."
         )
 
-    user_message = f"User notes: {notes}\n\nTranscript:\n{transcript}"
+    return system_prompt
 
-    models_to_try = [primary_model, fallback_model]
+
+def _call_gemini_with_retry(client, system_prompt: str, user_message: str, models_to_try: list, types) -> str:
+    """Run a single Gemini summarization call with model fallback and retry."""
     max_retries = 2
 
     for attempt in range(max_retries):
@@ -187,7 +151,6 @@ def summarize_transcript(
                     current_model,
                     attempt + 1,
                 )
-
                 response = client.models.generate_content(
                     model=current_model,
                     contents=user_message,
@@ -196,7 +159,6 @@ def summarize_transcript(
                         temperature=0.3,
                     ),
                 )
-
                 summary = response.text
                 logger.info("Gemini summarization complete (%d chars)", len(summary))
                 return summary
@@ -205,7 +167,6 @@ def summarize_transcript(
                 if _is_retryable_gemini_error(exc):
                     logger.warning("Falling back from %s: %s", current_model, exc)
                     continue
-
                 logger.error("Unexpected error with %s: %s", current_model, exc)
                 raise
 
@@ -215,6 +176,83 @@ def summarize_transcript(
             time.sleep(sleep_time)
 
     raise RuntimeError(f"Summarization failed: Models {models_to_try} are experiencing high demand.")
+
+
+def summarize_transcript(
+    api_key: str,
+    transcript: str,
+    notes: str,
+    prompt_types: "list[str] | None" = None,
+    custom_prompt: str = "",
+    summary_style: str = "normal",
+    summary_language: str = "en",
+    model: str = "gemini-3.1-pro-preview",
+    model_fallback: str = "gemini-3-flash-preview",
+    company_context: str = "",
+    meeting_context: str = "",
+    # Deprecated — kept for backward compatibility with existing callers/tests
+    is_interview: bool = False,
+) -> str:
+    """Summarize a meeting transcript using Google Gemini.
+
+    Args:
+        api_key: Google Gemini API key.
+        transcript: The full meeting transcript text.
+        notes: User notes from Fibery (may be empty).
+        prompt_types: List of prompt type keys ('summarize', 'interview', 'shareable', 'custom').
+            Multiple types trigger separate Gemini calls combined with section headers.
+        custom_prompt: Role prompt text used when 'custom' is in prompt_types.
+        summary_style: Output length style: normal, short, or minimal.
+        summary_language: Output language code for the generated summary.
+        company_context: Company-specific context (uses default if empty).
+        meeting_context: Dynamic per-meeting context (participants, orgs).
+        is_interview: Deprecated. Used as fallback when prompt_types is not provided.
+
+    Returns:
+        The AI-generated summary text. Multiple prompt types produce labeled sections
+        separated by horizontal rules.
+    """
+    from google import genai
+    from google.genai import types
+
+    # Backward compat: derive prompt_types from is_interview when not explicitly set
+    if not prompt_types:
+        prompt_types = ["interview"] if is_interview else ["summarize"]
+
+    client = genai.Client(
+        api_key=api_key,
+        http_options={"timeout": _SUMMARY_REQUEST_TIMEOUT_MS},
+    )
+
+    user_message = f"User notes: {notes}\n\nTranscript:\n{transcript}"
+    models_to_try = [model, model_fallback]
+    is_multi = len(prompt_types) > 1
+    sections = []
+
+    for ptype in prompt_types:
+        if ptype == "custom":
+            role_prompt = custom_prompt.strip() if custom_prompt.strip() else DEFAULT_MEETING_PROMPT
+        else:
+            role_prompt = PROMPT_TYPE_PROMPTS.get(ptype, DEFAULT_MEETING_PROMPT)
+
+        system_prompt = _build_system_prompt(
+            role_prompt=role_prompt,
+            prompt_type=ptype,
+            summary_style=summary_style,
+            summary_language=summary_language,
+            company_context=company_context,
+            meeting_context=meeting_context,
+        )
+
+        section_text = _call_gemini_with_retry(client, system_prompt, user_message, models_to_try, types)
+
+        if is_multi:
+            label = PROMPT_TYPE_LABELS.get(ptype, ptype.title())
+            sections.append(f"## {label}\n\n{section_text}")
+        else:
+            sections.append(section_text)
+
+    return "\n\n---\n\n".join(sections)
 
 
 def extract_problems(

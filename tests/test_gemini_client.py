@@ -178,6 +178,79 @@ def test_summarize_transcript_uses_requested_output_language(monkeypatch):
     assert "Write the entire summary in Dutch." in system_instruction
 
 
+def test_summarize_transcript_single_prompt_type_uses_meeting_prompt(monkeypatch):
+    from config.constants import DEFAULT_MEETING_PROMPT
+
+    fake_google = _install_fake_google(monkeypatch, ["meeting summary"])
+    summary = gemini_client.summarize_transcript(
+        api_key="test-key",
+        transcript="Speaker A: hello",
+        notes="",
+        prompt_types=["summarize"],
+        model="gemini-pro",
+        model_fallback="gemini-flash",
+    )
+
+    assert summary == "meeting summary"
+    call = fake_google.Client.instances[0].calls[0]
+    assert DEFAULT_MEETING_PROMPT in call["config"].kwargs["system_instruction"]
+
+
+def test_summarize_transcript_interview_prompt_type_uses_interview_prompt(monkeypatch):
+    from config.constants import DEFAULT_INTERVIEW_PROMPT
+
+    fake_google = _install_fake_google(monkeypatch, ["interview summary"])
+    summary = gemini_client.summarize_transcript(
+        api_key="test-key",
+        transcript="Speaker A: hello",
+        notes="",
+        prompt_types=["interview"],
+        model="gemini-pro",
+        model_fallback="gemini-flash",
+    )
+
+    assert summary == "interview summary"
+    call = fake_google.Client.instances[0].calls[0]
+    assert DEFAULT_INTERVIEW_PROMPT[:50] in call["config"].kwargs["system_instruction"]
+
+
+def test_summarize_transcript_multi_prompt_types_makes_separate_calls_and_combines(monkeypatch):
+    fake_google = _install_fake_google(monkeypatch, ["meeting text", "shareable text"])
+    summary = gemini_client.summarize_transcript(
+        api_key="test-key",
+        transcript="Speaker A: hello",
+        notes="",
+        prompt_types=["summarize", "shareable"],
+        model="gemini-pro",
+        model_fallback="gemini-flash",
+    )
+
+    client = fake_google.Client.instances[0]
+    assert len(client.calls) == 2
+    assert "---" in summary
+    assert "## Summary" in summary
+    assert "## Shareable Summary" in summary
+    assert "meeting text" in summary
+    assert "shareable text" in summary
+
+
+def test_summarize_transcript_custom_prompt_type_uses_custom_text(monkeypatch):
+    fake_google = _install_fake_google(monkeypatch, ["custom summary"])
+    summary = gemini_client.summarize_transcript(
+        api_key="test-key",
+        transcript="Speaker A: hello",
+        notes="",
+        prompt_types=["custom"],
+        custom_prompt="My special instructions",
+        model="gemini-pro",
+        model_fallback="gemini-flash",
+    )
+
+    assert summary == "custom summary"
+    call = fake_google.Client.instances[0].calls[0]
+    assert "My special instructions" in call["config"].kwargs["system_instruction"]
+
+
 def test_cleanup_transcript_falls_back_on_deadline_exceeded(monkeypatch):
     fake_google = _install_fake_google(
         monkeypatch,

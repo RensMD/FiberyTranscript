@@ -8,7 +8,7 @@ import tempfile
 import threading
 
 from config.settings import Settings
-from session import RecordingSession, SessionContext, SessionResults
+from config.session import RecordingSession, SessionContext, SessionResults
 from transcription.formatter import format_diarized_transcript
 
 

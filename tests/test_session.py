@@ -1,7 +1,7 @@
 """Tests for SessionContext, SessionResults, and RecordingSession."""
 
 import threading
-from session import RecordingSession, SessionContext, SessionResults
+from config.session import RecordingSession, SessionContext, SessionResults
 
 
 class TestSessionContext:
