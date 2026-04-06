@@ -2909,6 +2909,117 @@ class FiberyTranscriptApp:
             logger.error("Fibery summarize workflow failed: %s", e)
             return {"success": False, "error": _friendly_error(e)}
 
+    def generate_problems(self) -> dict:
+        """Extract structured problems from a linked Market Interview and create them in Fibery.
+
+        Reads Notes + Transcript from Fibery, sends to Gemini for structured problem extraction,
+        then creates Market/Problem entities one-by-one. Transitions the interview to
+        'Extract Problems' state after at least one problem is successfully created.
+        """
+        from integrations.fibery_client import FiberyClient
+        from integrations.gemini_client import extract_problems
+
+        # Capture locally to prevent TOCTOU (same pattern as generate_summary)
+        entity = self._validated_entity
+        client = self._fibery_client
+
+        if not entity or entity.database.lower() != "market interview":
+            return {"success": False, "error": "No Market Interview linked"}
+        if not client:
+            return {"success": False, "error": "No Fibery client available"}
+
+        try:
+            notes = ""
+            transcript = ""
+            try:
+                notes = client.get_entity_notes(entity) or ""
+            except Exception as e:
+                logger.warning("Could not fetch notes for problem extraction: %s", e)
+            try:
+                transcript = client.get_entity_transcript(entity) or ""
+            except Exception as e:
+                logger.warning("Could not fetch transcript for problem extraction: %s", e)
+
+            if not notes.strip() and not transcript.strip():
+                return {"success": False, "error": "No notes or transcript found in Fibery"}
+
+            segments = []
+            try:
+                segments = client.get_entity_segments(entity)
+            except Exception as e:
+                logger.warning("Could not fetch segments: %s", e)
+            segment_hints = ", ".join(segments) if segments else ""
+
+            interview_name = entity.entity_name
+            try:
+                interview_name = client.get_entity_name(entity)
+            except Exception:
+                pass
+
+            meeting_context = ""
+            try:
+                entity_ctx = self._fetch_entity_context()
+                if entity_ctx:
+                    from integrations.context_builder import build_summary_context
+                    meeting_context = build_summary_context(entity_ctx)
+            except Exception as e:
+                logger.warning("Could not build meeting context for problem extraction: %s", e)
+
+            logger.info(
+                "Generating problems for interview '%s' (notes=%d chars, transcript=%d chars)",
+                interview_name, len(notes), len(transcript),
+            )
+
+            problems = extract_problems(
+                api_key=get_key("gemini_api_key"),
+                transcript=transcript,
+                notes=notes,
+                interview_name=interview_name,
+                segment_hints=segment_hints,
+                model=self.settings.gemini_model,
+                model_fallback=self.settings.gemini_model_fallback,
+                company_context=self.settings.company_context,
+                meeting_context=meeting_context,
+            )
+
+            created_count = 0
+            skipped_count = 0
+            error_count = 0
+
+            for problem_data in problems:
+                struggle = (problem_data.get("struggle_with") or "").strip()
+                if not struggle:
+                    skipped_count += 1
+                    logger.info("Skipping problem with empty struggle_with")
+                    continue
+                try:
+                    client.create_problem_entity(entity, problem_data)
+                    created_count += 1
+                except Exception as e:
+                    error_count += 1
+                    logger.error("Failed to create problem entity '%.60s': %s", struggle, e)
+
+            if created_count > 0:
+                try:
+                    client.set_interview_state(entity, FiberyClient._EXTRACT_PROBLEMS_STATE_ID)
+                except Exception as e:
+                    logger.warning("Failed to set interview state to Extract Problems: %s", e)
+
+            logger.info(
+                "Problem generation complete: created=%d, skipped=%d, errors=%d",
+                created_count, skipped_count, error_count,
+            )
+            return {
+                "success": True,
+                "created_count": created_count,
+                "skipped_count": skipped_count,
+                "error_count": error_count,
+            }
+
+        except Exception as e:
+            logger.error("Problem generation failed: %s", e)
+            return {"success": False, "error": _friendly_error(e)}
+
     # --- UI Communication ---
 
     def _emergency_stop_recording(self) -> None:

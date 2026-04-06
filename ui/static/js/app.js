@@ -42,6 +42,9 @@ let summarizeRetryPending = false;
 let summarizeStartedAt = 0;
 let summarizeProgressTimer = null;
 let hasCompletedSummary = false;
+let problemsInProgress = false;   // true while problem extraction is running
+let problemsStartedAt = 0;
+let problemsProgressTimer = null;
 let transcriptionInProgress = false;
 let hasCompletedTranscription = false;
 const IMPROVE_TRANSCRIPT_WITH_CONTEXT = true;
@@ -115,6 +118,9 @@ const copySummaryBtn = document.getElementById('copySummaryBtn');
 const retryRow = document.getElementById('retryRow');
 const retryTranscriptBtn = document.getElementById('retryTranscriptBtn');
 const retryAudioUploadBtn = document.getElementById('retryAudioUploadBtn');
+const problemsRow = document.getElementById('problemsRow');
+const generateProblemsBtn = document.getElementById('generateProblemsBtn');
+const problemsStatus = document.getElementById('problemsStatus');
 
 // === Initialization ===
 window.addEventListener('pywebviewready', async () => {
@@ -897,6 +903,8 @@ function applyLinkedEntity(result, entityUrl) {
         audioStorageCollapsible.classList.remove('collapsed');
     }
 
+    problemsRow.classList.toggle('hidden', currentEntityDb !== 'Market Interview');
+
     if (result.pending_summary && sendActions.classList.contains('visible')) {
         setFiberyStatus('Sending summary to Fibery...', '');
     }
@@ -1033,6 +1041,7 @@ function resetFiberyValidation() {
     currentEntityDb = '';
     linkedTranscriptText = '';
     fiberyEntityInfo.classList.add('hidden');
+    problemsRow.classList.add('hidden');
     fiberyDisambiguation.classList.add('hidden');
     fiberySelectRow.classList.remove('hidden');
     fiberySelectHint.classList.remove('hidden');
@@ -1733,6 +1742,74 @@ function setFiberyStatus(text, type) {
     const shouldShowInlineStatus = Boolean(text) && (type === 'error' || type === 'warning');
     summaryStatusRow.classList.toggle('hidden', !shouldShowInlineStatus);
 }
+
+// === Generate Problems ===
+
+function formatProblemsLabel() {
+    if (!problemsStartedAt) return 'Extracting...';
+    const elapsed = Math.max(0, Math.floor((Date.now() - problemsStartedAt) / 1000));
+    if (elapsed < 10) return 'Extracting...';
+    return `Extracting... (${elapsed}s)`;
+}
+
+function startProblemsProgressTimer() {
+    stopProblemsProgressTimer();
+    problemsStartedAt = Date.now();
+    problemsProgressTimer = setInterval(() => {
+        generateProblemsBtn.textContent = formatProblemsLabel();
+    }, 1000);
+}
+
+function stopProblemsProgressTimer() {
+    problemsStartedAt = 0;
+    if (problemsProgressTimer) {
+        clearInterval(problemsProgressTimer);
+        problemsProgressTimer = null;
+    }
+}
+
+generateProblemsBtn.addEventListener('click', async () => {
+    if (problemsInProgress) return;
+    problemsInProgress = true;
+    generateProblemsBtn.disabled = true;
+    generateProblemsBtn.classList.add('processing');
+    problemsStatus.textContent = '';
+    startProblemsProgressTimer();
+    generateProblemsBtn.textContent = formatProblemsLabel();
+    try {
+        await window.pywebview.api.generate_problems();
+    } catch (err) {
+        problemsInProgress = false;
+        generateProblemsBtn.disabled = false;
+        generateProblemsBtn.classList.remove('processing');
+        generateProblemsBtn.textContent = 'Generate Problems';
+        stopProblemsProgressTimer();
+        showToast('Error: ' + err, 'error');
+    }
+});
+
+window.onProblemsComplete = function(result) {
+    problemsInProgress = false;
+    generateProblemsBtn.disabled = false;
+    generateProblemsBtn.classList.remove('processing');
+    generateProblemsBtn.textContent = 'Generate Problems';
+    stopProblemsProgressTimer();
+    problemsStatus.textContent = '';
+    const created = result.created_count || 0;
+    const errors = result.error_count || 0;
+    let msg = `Created ${created} problem${created !== 1 ? 's' : ''}`;
+    if (errors > 0) msg += `, ${errors} failed`;
+    showToast(msg, errors > 0 ? 'warning' : 'success');
+};
+
+window.onProblemsError = function(message) {
+    problemsInProgress = false;
+    generateProblemsBtn.disabled = false;
+    generateProblemsBtn.classList.remove('processing');
+    generateProblemsBtn.textContent = 'Generate Problems';
+    stopProblemsProgressTimer();
+    showToast('Problem extraction failed: ' + message, 'error');
+};
 
 // === Retry Handlers ===
 retryTranscriptBtn.addEventListener('click', async () => {

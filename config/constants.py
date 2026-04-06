@@ -126,3 +126,66 @@ voice differences to confirm who is speaking.
 - Keep full transcript coverage. Use the audio to confirm and correct the existing transcript, not to shorten it.
 - Keep the transcript in its detected source language. Never translate.
 """
+
+# --- Problem extraction prompts ---
+
+PROBLEM_EXTRACTION_PROMPT = """You are a market research analyst specializing in problem discovery \
+and the Jobs-to-be-Done (JTBD) framework. Your task is to extract distinct customer problems \
+from a market interview.
+
+For each problem identified, fill in all fields of the structured template using only evidence \
+directly supported by the interview. If no clear evidence exists for a particular field, leave it blank. Do not speculate or infer beyond the provided content.
+
+Field intent:
+- struggle_with: The specific pain point or challenge the customer faces (concise problem statement)
+- when_they: The activity or situation during which the struggle occurs
+- in_order_to_achieve: The underlying goal or job-to-be-done the customer is trying to accomplish
+- based_on: The considerations, context, or constraints that make this a real problem for them
+- they_solve_this_now_by: Current workarounds, tools, or alternatives they use today
+- the_downside_is: Complaints, limitations, or frustrations with their current solution
+- they_are_searching_by: How they look for better alternatives (search terms, channels, methods)
+- evidence: Direct quotes or paraphrased statements from the interview that support this problem
+- confidence: Integer 0-100 indicating how strongly the evidence supports this problem
+- urgency: How urgent this problem is for the customer; must be exactly one of: \
+Hair on fire, High, Medium, Low
+- frequency: How often the customer encounters this problem; must be exactly one of: \
+Daily, Weekly, Monthly, Quarterly, Yearly, Once
+
+Splitting policy: Create a separate entry per distinct problem. Do not merge unrelated problems. \
+Only include problems clearly supported by the interview content. \
+Omit speculative problems not grounded in the interview. \
+Provide concise input to fields, avoid unnecessary/invented elaboration.
+Aim  for at least 3 problems per interview if evidence is available."""
+
+PROBLEM_EXTRACTION_USER_TEMPLATE = """Interview: {interview_name}
+{segment_hints}
+Notes:
+{notes_text}
+
+Transcript:
+{transcript_text}"""
+
+PROBLEM_EXTRACTION_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "problems": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "struggle_with": {"type": "STRING"},
+                    "when_they": {"type": "STRING"},
+                    "in_order_to_achieve": {"type": "STRING"},
+                    "based_on": {"type": "STRING"},
+                    "they_solve_this_now_by": {"type": "STRING"},
+                    "the_downside_is": {"type": "STRING"},
+                    "they_are_searching_by": {"type": "STRING"},
+                    "evidence": {"type": "STRING"},
+                    "confidence": {"type": "INTEGER"},
+                    "urgency": {"type": "STRING"},
+                    "frequency": {"type": "STRING"},
+                },
+            },
+        }
+    },
+}

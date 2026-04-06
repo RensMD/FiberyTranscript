@@ -572,6 +572,32 @@ class ApiBridge:
         threading.Thread(target=_background, daemon=True).start()
         return {"success": True, "message": "Processing in background"}
 
+    def generate_problems(self) -> dict:
+        """Extract problems from the linked Market Interview and create them in Fibery (runs in background).
+
+        Result arrives via window.onProblemsComplete / window.onProblemsError.
+        """
+        def _background():
+            import json
+            try:
+                result = self._app.generate_problems()
+                if result.get("success"):
+                    self._app._notify_js(
+                        f"window.onProblemsComplete({json.dumps(result)})"
+                    )
+                else:
+                    self._app._notify_js(
+                        f"window.onProblemsError({json.dumps(result.get('error', 'Unknown error'))})"
+                    )
+            except Exception as e:
+                logger.error("Problem generation failed: %s", e)
+                self._app._notify_js(
+                    f"window.onProblemsError({json.dumps(str(e))})"
+                )
+
+        threading.Thread(target=_background, daemon=True).start()
+        return {"success": True, "message": "Processing in background"}
+
     # --- API Keys ---
 
     def get_api_keys_status(self) -> dict:

@@ -46,10 +46,7 @@ logs/
 .claude/
 CLAUDE.local.md
 CLAUDE.md
-
-# Internal planning docs
-Masterplan
-Masterplan.*
+.claudeignore
 
 # IDE / OS noise
 .vscode/

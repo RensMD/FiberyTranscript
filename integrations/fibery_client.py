@@ -7,6 +7,8 @@ from typing import Optional
 from urllib.parse import unquote
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from config.constants import FIBERY_API_PATH, FIBERY_INSTANCE_URL
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,26 @@ class FiberyClient:
 
     _TIMEOUT = 30  # seconds for all HTTP requests
 
+    # UUIDs for Market/Urgency single-select options
+    _URGENCY_MAP = {
+        "Hair on fire": "cf93c940-e006-11f0-af4c-1b6308c0e0d9",
+        "High": "a80301b0-e020-11f0-be74-55115a5d9ece",
+        "Medium": "d55f3ee0-e006-11f0-af4c-1b6308c0e0d9",
+        "Low": "e3d57c51-e006-11f0-af4c-1b6308c0e0d9",
+    }
+    # UUIDs for Market/Frequency single-select options
+    _FREQUENCY_MAP = {
+        "Daily": "a12afce0-e006-11f0-af4c-1b6308c0e0d9",
+        "Weekly": "a55dd120-e006-11f0-af4c-1b6308c0e0d9",
+        "Monthly": "a6fba2a1-e006-11f0-af4c-1b6308c0e0d9",
+        "Quarterly": "a9be6c21-e006-11f0-af4c-1b6308c0e0d9",
+        "Yearly": "abc4c371-e006-11f0-af4c-1b6308c0e0d9",
+        "Once": "ad14c311-e006-11f0-af4c-1b6308c0e0d9",
+    }
+    # Workflow state UUIDs for Market/Problem and Market Interview
+    _AI_SUGGESTION_STATE_ID = "cacb3460-2dc8-11f1-8119-a147c72e932c"
+    _EXTRACT_PROBLEMS_STATE_ID = "91abf940-2dea-11f1-a4bf-bb661e9f5363"
+
     def __init__(self, api_token: str, instance_url: Optional[str] = None):
         resolved_instance_url = (instance_url or FIBERY_INSTANCE_URL).strip()
         self._base_url = resolved_instance_url.rstrip("/")
@@ -48,6 +70,19 @@ class FiberyClient:
             "Authorization": f"Token {api_token}",
             "Content-Type": "application/json",
         })
+        # Retry on 429/503 with exponential backoff (respects Retry-After header).
+        # backoff_factor=2 → sleeps: 2s, 4s, 8s between attempts.
+        _retry = Retry(
+            total=4,
+            backoff_factor=2,
+            status_forcelist=[429, 503],
+            allowed_methods=["POST", "GET"],
+            raise_on_status=False,
+            respect_retry_after_header=True,
+        )
+        _adapter = HTTPAdapter(max_retries=_retry)
+        self._session.mount("https://", _adapter)
+        self._session.mount("http://", _adapter)
 
     def extract_url_candidates(self, url: str) -> list:
         """Extract candidate entity URLs from a potentially compound Fibery URL.
@@ -892,6 +927,183 @@ class FiberyClient:
     def clear_recording_lock(self, entity: FiberyEntity) -> None:
         """Clear the 'Recording By' text field on a Fibery entity."""
         self.set_recording_lock(entity, "")
+
+    def get_entity_segments(self, entity: FiberyEntity) -> list[str]:
+        """Query linked Market/Segments from a Market Interview entity.
+
+        Returns list of segment name strings (empty list on failure or no segments).
+        """
+        if not entity.uuid:
+            self.get_entity_uuid(entity)
+
+        payload = [
+            {
+                "command": "fibery.entity/query",
+                "args": {
+                    "query": {
+                        "q/from": f"{entity.space}/{entity.database}",
+                        "q/select": {
+                            "Market/Segments": {
+                                "q/from": ["Market/Segments"],
+                                "q/select": {"Market/Name": ["Market/Name"]},
+                                "q/limit": "q/no-limit",
+                            }
+                        },
+                        "q/where": ["=", ["fibery/id"], "$uuid"],
+                        "q/limit": 1,
+                    },
+                    "params": {"$uuid": entity.uuid},
+                },
+            }
+        ]
+        try:
+            resp = self._session.post(self._api_url, json=payload, timeout=self._TIMEOUT)
+            resp.raise_for_status()
+            result = resp.json()
+            rows = result[0].get("result", [])
+            if not rows:
+                return []
+            segments_raw = rows[0].get("Market/Segments", [])
+            if isinstance(segments_raw, list):
+                return [
+                    s.get("Market/Name", "")
+                    for s in segments_raw
+                    if isinstance(s, dict) and s.get("Market/Name")
+                ]
+        except Exception as e:
+            logger.warning("Failed to fetch segments for entity %s: %s", entity.uuid, e)
+        return []
+
+    def create_problem_entity(self, interview_entity: FiberyEntity, problem_data: dict) -> FiberyEntity:
+        """Create a Market/Problem entity linked to a Market Interview.
+
+        Sets all structured text fields, single-select fields by UUID, AI Confidence,
+        workflow state, and interview relation. Writes evidence to Market/Other document.
+        Returns FiberyEntity with uuid and internal_id populated.
+        """
+        import uuid as uuid_mod
+
+        if not interview_entity.uuid:
+            self.get_entity_uuid(interview_entity)
+
+        entity_uuid = str(uuid_mod.uuid4())
+        entity_data: dict = {
+            "fibery/id": entity_uuid,
+            "workflow/state": {"fibery/id": self._AI_SUGGESTION_STATE_ID},
+            "Market/Interview": {"fibery/id": interview_entity.uuid},
+        }
+
+        # Text field mapping from problem_data keys to Fibery field names
+        text_field_map = {
+            "struggle_with": "Market/Struggle with",
+            "when_they": "Market/When they",
+            "in_order_to_achieve": "Market/In order to achieve",
+            "based_on": "Market/Based on",
+            "they_solve_this_now_by": "Market/They solve this now by",
+            "the_downside_is": "Market/The downside is",
+            "they_are_searching_by": "Market/They are searching by",
+        }
+        for key, field in text_field_map.items():
+            value = (problem_data.get(key) or "").strip()
+            if value:
+                entity_data[field] = value
+
+        # AI Confidence: stored as 0.0–1.0 ratio (Fibery Percent format)
+        confidence = problem_data.get("confidence")
+        if isinstance(confidence, (int, float)):
+            entity_data["Market/AI Confidence"] = confidence / 100.0
+
+        # Single-select fields require UUID references
+        urgency = (problem_data.get("urgency") or "").strip()
+        urgency_id = self._URGENCY_MAP.get(urgency)
+        if urgency_id:
+            entity_data["Market/Urgency"] = {"fibery/id": urgency_id}
+
+        frequency = (problem_data.get("frequency") or "").strip()
+        frequency_id = self._FREQUENCY_MAP.get(frequency)
+        if frequency_id:
+            entity_data["Market/Frequency"] = {"fibery/id": frequency_id}
+
+        payload = [
+            {
+                "command": "fibery.entity/create",
+                "args": {
+                    "type": "Market/Problem",
+                    "entity": entity_data,
+                },
+            }
+        ]
+        resp = self._session.post(self._api_url, json=payload, timeout=self._TIMEOUT)
+        resp.raise_for_status()
+        result = resp.json()
+
+        if not result or not result[0].get("success"):
+            error_msg = result[0].get("result", "Unknown error") if result else "Empty response"
+            raise RuntimeError(f"Failed to create problem entity: {error_msg}")
+
+        logger.info("Created Market/Problem entity %s", entity_uuid)
+
+        # Fetch public-id for FiberyEntity construction
+        query_payload = [
+            {
+                "command": "fibery.entity/query",
+                "args": {
+                    "query": {
+                        "q/from": "Market/Problem",
+                        "q/select": ["fibery/public-id"],
+                        "q/where": ["=", ["fibery/id"], "$uuid"],
+                        "q/limit": 1,
+                    },
+                    "params": {"$uuid": entity_uuid},
+                },
+            }
+        ]
+        resp = self._session.post(self._api_url, json=query_payload, timeout=self._TIMEOUT)
+        resp.raise_for_status()
+        public_id = str(resp.json()[0]["result"][0]["fibery/public-id"])
+
+        problem_entity = FiberyEntity(
+            space="Market",
+            database="Problem",
+            entity_name=(problem_data.get("struggle_with") or "")[:80],
+            internal_id=public_id,
+            uuid=entity_uuid,
+        )
+
+        # Write evidence to Market/Other (rich-text document field)
+        evidence = (problem_data.get("evidence") or "").strip()
+        if evidence:
+            other_field = "Market/Other"
+            secrets = self._get_document_secrets(problem_entity, [other_field])
+            secret = secrets.get(other_field)
+            if secret:
+                self._update_document(secret, self._text_to_html(evidence))
+                logger.info("Updated Market/Other with evidence for entity %s", entity_uuid)
+            else:
+                logger.warning("No document secret for Market/Other on problem entity %s", entity_uuid)
+
+        return problem_entity
+
+    def set_interview_state(self, entity: FiberyEntity, state_id: str) -> None:
+        """Set workflow state on a Market Interview (or any) entity."""
+        if not entity.uuid:
+            self.get_entity_uuid(entity)
+
+        payload = [
+            {
+                "command": "fibery.entity/update",
+                "args": {
+                    "type": f"{entity.space}/{entity.database}",
+                    "entity": {
+                        "fibery/id": entity.uuid,
+                        "workflow/state": {"fibery/id": state_id},
+                    },
+                },
+            }
+        ]
+        resp = self._session.post(self._api_url, json=payload, timeout=self._TIMEOUT)
+        resp.raise_for_status()
+        logger.info("Set state %s on entity %s", state_id, entity.uuid)
 
     def close(self) -> None:
         """Close the underlying HTTP session."""

@@ -863,6 +863,18 @@ textarea::placeholder {
     margin-top: 8px;
 }
 
+.problems-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.problems-status {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
 /* Audio health indicators */
 .audio-health {
     display: flex;

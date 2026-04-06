@@ -10,6 +10,9 @@ from config.constants import (
     DEFAULT_COMPANY_CONTEXT,
     DEFAULT_INTERVIEW_PROMPT,
     DEFAULT_MEETING_PROMPT,
+    PROBLEM_EXTRACTION_PROMPT,
+    PROBLEM_EXTRACTION_SCHEMA,
+    PROBLEM_EXTRACTION_USER_TEMPLATE,
     TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM,
     TRANSCRIPT_CLEANUP_PROMPT,
 )
@@ -212,6 +215,115 @@ def summarize_transcript(
             time.sleep(sleep_time)
 
     raise RuntimeError(f"Summarization failed: Models {models_to_try} are experiencing high demand.")
+
+
+def extract_problems(
+    api_key: str,
+    transcript: str,
+    notes: str,
+    interview_name: str = "",
+    segment_hints: str = "",
+    model: str = "gemini-3.1-pro-preview",
+    model_fallback: str = "gemini-3-flash-preview",
+    company_context: str = "",
+    meeting_context: str = "",
+) -> list[dict]:
+    """Extract structured problems from a market interview using Google Gemini.
+
+    Args:
+        api_key: Google Gemini API key.
+        transcript: The full interview transcript text.
+        notes: User notes from Fibery (may be empty).
+        interview_name: Display name of the interview entity.
+        segment_hints: Comma-separated market segments linked to the interview.
+        model: Primary Gemini model.
+        model_fallback: Fallback Gemini model.
+        company_context: Company-specific context.
+        meeting_context: Dynamic per-meeting context (participants, orgs).
+
+    Returns:
+        List of problem dicts with keys matching PROBLEM_EXTRACTION_SCHEMA item properties.
+    """
+    import json
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(
+        api_key=api_key,
+        http_options={"timeout": _SUMMARY_REQUEST_TIMEOUT_MS},
+    )
+
+    context = company_context.strip() if company_context.strip() else DEFAULT_COMPANY_CONTEXT
+    system_prompt = PROBLEM_EXTRACTION_PROMPT
+    if context:
+        system_prompt += f"\n\nCompany context:\n{context}"
+    if meeting_context.strip():
+        system_prompt += f"\n\nMeeting participants and context:\n{meeting_context}"
+
+    segment_line = f"Market segments: {segment_hints}" if segment_hints else ""
+    user_message = PROBLEM_EXTRACTION_USER_TEMPLATE.format(
+        interview_name=interview_name or "Unknown",
+        segment_hints=segment_line,
+        notes_text=notes or "(none)",
+        transcript_text=transcript or "(none)",
+    )
+
+    models_to_try = [m for m in [model, model_fallback] if m]
+    seen_keys: set = set()
+    max_retries = 2
+
+    for attempt in range(max_retries):
+        for current_model in models_to_try:
+            try:
+                logger.info(
+                    "Extracting problems with Gemini model=%s (attempt %d)",
+                    current_model,
+                    attempt + 1,
+                )
+                response = client.models.generate_content(
+                    model=current_model,
+                    contents=user_message,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.2,
+                        response_mime_type="application/json",
+                        response_schema=PROBLEM_EXTRACTION_SCHEMA,
+                    ),
+                )
+                data = json.loads(response.text)
+                problems = data.get("problems", [])
+
+                # Dedup within run by exact (struggle_with, when_they, in_order_to_achieve, based_on) tuple
+                unique = []
+                for p in problems:
+                    key = (
+                        p.get("struggle_with", ""),
+                        p.get("when_they", ""),
+                        p.get("in_order_to_achieve", ""),
+                        p.get("based_on", ""),
+                    )
+                    if key in seen_keys:
+                        logger.info("Skipping duplicate problem: %.60s", key[0])
+                        continue
+                    seen_keys.add(key)
+                    unique.append(p)
+
+                logger.info("Extracted %d problems (%d unique)", len(problems), len(unique))
+                return unique
+
+            except Exception as exc:
+                if _is_retryable_gemini_error(exc):
+                    logger.warning("Falling back from %s for problem extraction: %s", current_model, exc)
+                    continue
+                logger.error("Unexpected error with %s during problem extraction: %s", current_model, exc)
+                raise
+
+        if attempt < max_retries - 1:
+            sleep_time = 5 * (attempt + 1)
+            logger.warning("Both models unavailable for problem extraction. Retrying in %d seconds...", sleep_time)
+            time.sleep(sleep_time)
+
+    raise RuntimeError(f"Problem extraction failed: Models {models_to_try} are experiencing high demand.")
 
 
 _LANGUAGE_NAMES = {
