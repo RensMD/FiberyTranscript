@@ -2146,6 +2146,7 @@ class FiberyTranscriptApp:
                         meeting_context=meeting_context,
                         company_context=self.settings.company_context,
                         model=self.settings.gemini_model_cleanup,
+                        model_fallback=self.settings.gemini_model_fallback,
                         audio_path=cleanup_audio,
                     )
                     results.set_cleaned_transcript(cleaned)
@@ -2664,6 +2665,14 @@ class FiberyTranscriptApp:
                 logger.warning("Failed to fetch linked transcript: %s", exc)
                 self._linked_transcript_text = ""
 
+            has_notes = False
+            if entity.database.lower() == "market interview":
+                try:
+                    notes_text = client.get_entity_notes(entity) or ""
+                    has_notes = bool(notes_text.strip())
+                except Exception as exc:
+                    logger.warning("Failed to fetch linked notes: %s", exc)
+
             # If transcript is already available (entity linked after recording), auto-send now
             session_batch = self._session.results.get_batch_result() if self._session else None
             if session_batch and session_batch.get("utterances"):
@@ -2707,6 +2716,7 @@ class FiberyTranscriptApp:
                 "pending_summary": pending_summary,
                 "has_transcript": bool(self._linked_transcript_text.strip()),
                 "transcript_text": self._linked_transcript_text,
+                "has_notes": has_notes,
             }
 
             return result

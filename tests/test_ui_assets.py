@@ -57,10 +57,10 @@ def test_transcribe_controls_layout_is_inline_and_always_uses_context_improvemen
     settings_js = (PROJECT_ROOT / "ui" / "static" / "js" / "settings.js").read_text(encoding="utf-8")
     styles_css = (PROJECT_ROOT / "ui" / "static" / "css" / "styles.css").read_text(encoding="utf-8")
 
-    assert 'class="transcript-mode-controls"' in index_html
+    assert 'class="option-row"' in index_html
     assert 'id="recordingModeMicOnly"' in index_html
     assert 'id="recordingModeMicAndSpeakers"' in index_html
-    assert "transcript-mode-controls" in styles_css
+    assert "option-row" in styles_css
     assert "IMPROVE_TRANSCRIPT_WITH_CONTEXT = true" in app_js
     assert "advancedTranscriptCard" not in index_html
     assert "advancedTranscriptCard" not in app_js

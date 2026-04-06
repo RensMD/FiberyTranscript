@@ -5,10 +5,6 @@ import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-DEFAULT_CLEANUP_MODEL = "gemini-3.1-flash-lite-preview"
-_RETIRED_CLEANUP_MODELS = {"gemini-2.5-flash-lite"}
-
-
 @dataclass
 class Settings:
     # Audio preferences
@@ -33,14 +29,14 @@ class Settings:
     post_normalize: bool = False
 
     # Recording
-    save_recordings: bool = True
+    save_recordings: bool = False
     recordings_dir: str = ""
     audio_storage: str = "local"  # "local" or "fibery"
 
     # AI models
     gemini_model: str = "gemini-3.1-pro-preview"
     gemini_model_fallback: str = "gemini-3-flash-preview"
-    gemini_model_cleanup: str = DEFAULT_CLEANUP_MODEL
+    gemini_model_cleanup: str = "gemini-3.1-flash-lite-preview"
 
     # Summarization
     company_context: str = ""
@@ -60,10 +56,7 @@ class Settings:
                     data = json.load(f)
                 known_fields = cls.__dataclass_fields__
                 filtered = {k: v for k, v in data.items() if k in known_fields}
-                settings = cls(**filtered)
-                if settings.gemini_model_cleanup in _RETIRED_CLEANUP_MODELS:
-                    settings.gemini_model_cleanup = DEFAULT_CLEANUP_MODEL
-                return settings
+                return cls(**filtered)
             except (json.JSONDecodeError, TypeError, AttributeError):
                 return cls()
         return cls()

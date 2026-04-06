@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from config.settings import DEFAULT_CLEANUP_MODEL, Settings
+from config.settings import Settings
 
 
 class TestSettingsDefaults:
@@ -23,7 +23,7 @@ class TestSettingsDefaults:
         assert s.save_recordings is True
         assert s.audio_storage == "local"
         assert s.display_name == ""
-        assert s.gemini_model_cleanup == DEFAULT_CLEANUP_MODEL
+        assert s.gemini_model_cleanup == "gemini-3.1-flash-lite-preview"
 
     def test_custom_values(self):
         s = Settings(display_name="Alice", theme="light", save_recordings=False)
@@ -52,13 +52,7 @@ class TestSettingsLoad:
         assert s.post_noise_suppression is False
         assert s.post_agc is False
         assert s.post_normalize is False
-        assert s.gemini_model_cleanup == DEFAULT_CLEANUP_MODEL
-
-    def test_load_migrates_legacy_cleanup_default(self, tmp_path):
-        path = tmp_path / "settings.json"
-        path.write_text(json.dumps({"gemini_model_cleanup": "gemini-2.5-flash-lite"}))
-        s = Settings.load(path)
-        assert s.gemini_model_cleanup == DEFAULT_CLEANUP_MODEL
+        assert s.gemini_model_cleanup == "gemini-3.1-flash-lite-preview"
 
     def test_load_ignores_unknown_fields(self, tmp_path):
         """Unknown keys in JSON should not cause errors."""

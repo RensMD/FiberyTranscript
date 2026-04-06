@@ -34,13 +34,21 @@ class SettingsManager {
             if (window.sysViz) window.sysViz.refreshColors();
         });
 
-        // Toggle recordings folder visibility
-        this.saveRecordingsCheckbox.addEventListener('change', () => {
-            this._toggleRecordingsDirRow();
-        });
+
         this.postProcessingCheckbox.addEventListener('change', () => {
             this._togglePostProcessingControls();
         });
+
+        // Advanced settings toggle
+        const advToggle = document.getElementById('advancedSettingsToggle');
+        const advContent = document.getElementById('advancedSettingsContent');
+        if (advToggle && advContent) {
+            advToggle.addEventListener('click', () => {
+                const expanded = advToggle.getAttribute('aria-expanded') === 'true';
+                advToggle.setAttribute('aria-expanded', String(!expanded));
+                advContent.classList.toggle('collapsed', expanded);
+            });
+        }
 
         // Browse folder button
         this.browseBtn.addEventListener('click', () => this.browseFolder());
@@ -63,11 +71,7 @@ class SettingsManager {
     }
 
     _toggleRecordingsDirRow() {
-        if (this.saveRecordingsCheckbox.checked) {
-            this.recordingsDirRow.classList.remove('hidden');
-        } else {
-            this.recordingsDirRow.classList.add('hidden');
-        }
+        this.recordingsDirRow.classList.remove('hidden');
     }
 
     _togglePostProcessingControls() {

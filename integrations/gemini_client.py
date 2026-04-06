@@ -18,7 +18,6 @@ from config.constants import (
     TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM,
     TRANSCRIPT_CLEANUP_PROMPT,
 )
-from config.settings import DEFAULT_CLEANUP_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +29,6 @@ _CLEANUP_LENGTH_GUARD_MIN_WORD_RATIO = 0.4
 _CLEANUP_LENGTH_GUARD_MIN_CHAR_RATIO = 0.45
 _CLEANUP_MAX_CHARS_PER_REQUEST = 18_000
 _CLEANUP_MAX_BLOCKS_PER_REQUEST = 80
-_CLEANUP_FALLBACK_MODEL = "gemini-3.1-pro-preview"
 
 SUMMARY_STYLE_INSTRUCTIONS = {
     "normal": " ",
@@ -182,12 +180,12 @@ def summarize_transcript(
     api_key: str,
     transcript: str,
     notes: str,
+    model: str,
+    model_fallback: str,
     prompt_types: "list[str] | None" = None,
     custom_prompt: str = "",
     summary_style: str = "normal",
     summary_language: str = "en",
-    model: str = "gemini-3.1-pro-preview",
-    model_fallback: str = "gemini-3-flash-preview",
     company_context: str = "",
     meeting_context: str = "",
     # Deprecated — kept for backward compatibility with existing callers/tests
@@ -259,10 +257,10 @@ def extract_problems(
     api_key: str,
     transcript: str,
     notes: str,
+    model: str,
+    model_fallback: str,
     interview_name: str = "",
     segment_hints: str = "",
-    model: str = "gemini-3.1-pro-preview",
-    model_fallback: str = "gemini-3-flash-preview",
     company_context: str = "",
     meeting_context: str = "",
 ) -> list[dict]:
@@ -610,11 +608,12 @@ def _cleanup_transcript_chunk(
 def cleanup_transcript(
     api_key: str,
     transcript: str,
+    model: str,
+    model_fallback: str,
     notes: str = "",
     language: str = "en",
     meeting_context: str = "",
     company_context: str = "",
-    model: str = DEFAULT_CLEANUP_MODEL,
     audio_path: str = "",
 ) -> str:
     """Clean up a raw transcript using Gemini: fix names, sentences, and formatting.
@@ -661,9 +660,8 @@ def cleanup_transcript(
         "\n\nGeneral company context (glossary only; not evidence that a person attended this meeting):\n"
         f"{context}"
     )
-    fallback_model = _CLEANUP_FALLBACK_MODEL
     models_to_try = []
-    for candidate in (model, fallback_model):
+    for candidate in (model, model_fallback):
         if candidate and candidate not in models_to_try:
             models_to_try.append(candidate)
 

@@ -60,6 +60,7 @@ const refreshDevicesBtn = document.getElementById('refreshDevicesBtn');
 
 // Step 1 – Fibery meeting selection
 const selectMeetingBtn = document.getElementById('selectMeetingBtn');
+const selectMeetingBtnLabel = document.getElementById('selectMeetingBtnLabel');
 const fiberySelectRow = document.getElementById('fiberySelectRow');
 const fiberySelectHint = document.getElementById('fiberySelectHint');
 const fiberyEntityInfo = document.getElementById('fiberyEntityInfo');
@@ -106,11 +107,13 @@ const audioStorageHint = document.getElementById('audioStorageHint');
 
 // Step 3 - Transcribe
 const transcribeBtn = document.getElementById('transcribeBtn');
+const transcribeBtnLabel = document.getElementById('transcribeBtnLabel');
 
 // Step 3 – AI summary
 const additionalPrompt = document.getElementById('additionalPrompt');
 const sendActions = document.getElementById('sendActions');
 const summarizeBtn = document.getElementById('summarizeBtn');
+const summarizeBtnLabel = document.getElementById('summarizeBtnLabel');
 const summaryStatusRow = document.getElementById('summaryStatusRow');
 const summaryStatusBadge = document.getElementById('summaryStatusBadge');
 const copyTranscriptBtn = document.getElementById('copyTranscriptBtn');
@@ -120,6 +123,7 @@ const retryTranscriptBtn = document.getElementById('retryTranscriptBtn');
 const retryAudioUploadBtn = document.getElementById('retryAudioUploadBtn');
 const problemsRow = document.getElementById('problemsRow');
 const generateProblemsBtn = document.getElementById('generateProblemsBtn');
+const generateProblemsBtnLabel = document.getElementById('generateProblemsBtnLabel');
 const problemsStatus = document.getElementById('problemsStatus');
 
 // === Initialization ===
@@ -431,10 +435,10 @@ function updateTranscribeButton(progressText = '') {
     transcribeBtn.classList.toggle('processing', transcriptionInProgress);
     transcribeBtn.disabled = !hasPreparedAudio() || transcriptionInProgress;
     if (transcriptionInProgress) {
-        transcribeBtn.textContent = progressText || 'Transcribing...';
+        transcribeBtnLabel.textContent = progressText || 'Transcribing...';
         return;
     }
-    transcribeBtn.textContent = hasCompletedTranscription ? 'Retranscribe' : 'Transcribe';
+    transcribeBtnLabel.textContent = hasCompletedTranscription ? 'Retranscribe' : 'Transcribe';
 }
 
 function clearSummaryForRetranscribe() {
@@ -825,19 +829,12 @@ function getEffectiveTranscriptText() {
 
 function updateSummaryActionsState(scrollIntoView = false) {
     const hasTranscript = hasEffectiveTranscript();
-    const summaryBlockedByCoreTranscription = transcriptionInProgress && !hasCompletedTranscription;
-    const shouldShowActions =
-        !isRecording &&
-        !summaryBlockedByCoreTranscription &&
-        (fiberyValidated || hasTranscript);
-
-    sendActions.classList.toggle('visible', shouldShowActions);
 
     applySummarizeButtonState(hasTranscript);
     copyTranscriptBtn.disabled = !hasTranscript;
     copySummaryBtn.disabled = !generatedSummary;
 
-    if (shouldShowActions && scrollIntoView) {
+    if (scrollIntoView) {
         sendActions.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 }
@@ -847,12 +844,12 @@ function applySummarizeButtonState(hasTranscript = hasEffectiveTranscript()) {
 
     if (summarizeInProgress) {
         summarizeBtn.disabled = true;
-        summarizeBtn.textContent = formatSummarizeLabel();
+        summarizeBtnLabel.textContent = formatSummarizeLabel();
         return;
     }
 
     summarizeBtn.disabled = !hasTranscript;
-    summarizeBtn.textContent = summarizeRetryPending
+    summarizeBtnLabel.textContent = summarizeRetryPending
         ? 'Retry Summary'
         : (hasCompletedSummary ? 'Resummarize' : 'Summarize');
 }
@@ -916,6 +913,9 @@ function applyLinkedEntity(result, entityUrl) {
     }
 
     problemsRow.classList.toggle('hidden', currentEntityDb !== 'Market Interview');
+    if (currentEntityDb === 'Market Interview') {
+        generateProblemsBtn.disabled = !result.has_notes && !result.has_transcript;
+    }
 
     // Auto-switch prompt type for interview entities
     if (currentEntityDb === 'Market Interview') {
@@ -930,7 +930,7 @@ function applyLinkedEntity(result, entityUrl) {
         'hidden', !document.getElementById('promptTypeCustom').checked
     );
 
-    if (result.pending_summary && sendActions.classList.contains('visible')) {
+    if (result.pending_summary) {
         setFiberyStatus('Sending summary to Fibery...', '');
     }
 }
@@ -952,7 +952,7 @@ selectMeetingBtn.addEventListener('click', selectMeetingFromPanel);
 
 async function selectMeetingFromPanel() {
     selectMeetingBtn.disabled = true;
-    selectMeetingBtn.textContent = 'Checking...';
+    selectMeetingBtnLabel.textContent = 'Checking...';
     setFiberyValidateStatus('', '');
 
     try {
@@ -999,7 +999,7 @@ async function selectMeetingFromPanel() {
     } catch (err) {
         setFiberyValidateStatus('Error: ' + err, 'error');
     } finally {
-        selectMeetingBtn.textContent = 'Select current meeting \u2192';
+        selectMeetingBtnLabel.textContent = 'Select Current Meeting';
         updateSelectButtonState();
     }
 }
@@ -1177,7 +1177,6 @@ async function resetSession() {
 
     // Reset summary and retry state
     clearSummaryForRetranscribe();
-    sendActions.classList.remove('visible');
     copyTranscriptBtn.disabled = true;
     applySummarizeButtonState(false);
 
@@ -1493,7 +1492,6 @@ let _lastFailedWavPath = '';
 window.onBatchFailed = function(info) {
     transcriptionInProgress = false;
     updateTranscribeButton();
-    sendActions.classList.remove('visible');
     uploadCollapsible.classList.remove('collapsed');
     clearUploadBtn.disabled = false;
     clearUploadBtn.classList.add('hidden');
@@ -1795,7 +1793,7 @@ function startProblemsProgressTimer() {
     stopProblemsProgressTimer();
     problemsStartedAt = Date.now();
     problemsProgressTimer = setInterval(() => {
-        generateProblemsBtn.textContent = formatProblemsLabel();
+        generateProblemsBtnLabel.textContent = formatProblemsLabel();
     }, 1000);
 }
 
@@ -1814,14 +1812,14 @@ generateProblemsBtn.addEventListener('click', async () => {
     generateProblemsBtn.classList.add('processing');
     problemsStatus.textContent = '';
     startProblemsProgressTimer();
-    generateProblemsBtn.textContent = formatProblemsLabel();
+    generateProblemsBtnLabel.textContent = formatProblemsLabel();
     try {
         await window.pywebview.api.generate_problems();
     } catch (err) {
         problemsInProgress = false;
         generateProblemsBtn.disabled = false;
         generateProblemsBtn.classList.remove('processing');
-        generateProblemsBtn.textContent = 'Generate Problems';
+        generateProblemsBtnLabel.textContent = 'Generate Problems';
         stopProblemsProgressTimer();
         showToast('Error: ' + err, 'error');
     }

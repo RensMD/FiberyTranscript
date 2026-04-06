@@ -169,6 +169,8 @@ def test_summarize_transcript_uses_requested_output_language(monkeypatch):
         notes="",
         is_interview=False,
         summary_language="nl",
+        model="gemini-pro",
+        model_fallback="gemini-flash",
     )
 
     assert summary == "Nederlandse samenvatting"
@@ -264,6 +266,7 @@ def test_cleanup_transcript_falls_back_on_deadline_exceeded(monkeypatch):
         api_key="test-key",
         transcript="Speaker A: hello",
         model="gemini-cleanup",
+        model_fallback="gemini-flash",
     )
 
     assert cleaned == "cleaned transcript"
@@ -271,7 +274,7 @@ def test_cleanup_transcript_falls_back_on_deadline_exceeded(monkeypatch):
     assert client.http_options == {"timeout": gemini_client._CLEANUP_REQUEST_TIMEOUT_MS}
     assert [call["model"] for call in client.calls] == [
         "gemini-cleanup",
-        "gemini-3.1-pro-preview",
+        "gemini-flash",
     ]
 
 
@@ -302,6 +305,7 @@ def test_cleanup_transcript_deletes_uploaded_audio_in_background(monkeypatch, tm
         api_key="test-key",
         transcript="Speaker A: hello",
         model="gemini-cleanup",
+        model_fallback="gemini-flash",
         audio_path=str(audio_path),
     )
 
@@ -333,6 +337,7 @@ def test_cleanup_transcript_treats_company_context_as_glossary_not_attendance(mo
         meeting_context="Confirmed internal participants in this meeting: Rens\nConfirmed external participants in this meeting: Andrej Karpathy",
         company_context="Possible people at the company: Alice Example, Bob Example",
         model="gemini-cleanup",
+        model_fallback="gemini-flash",
     )
 
     assert cleaned == "cleaned transcript"
@@ -379,13 +384,14 @@ def test_cleanup_transcript_uses_raw_when_all_models_overcompress(monkeypatch):
         api_key="test-key",
         transcript=transcript,
         model="gemini-cleanup",
+        model_fallback="gemini-flash",
     )
 
     assert cleaned == transcript
     client = fake_google.Client.instances[0]
     assert [call["model"] for call in client.calls] == [
         "gemini-cleanup",
-        "gemini-3.1-pro-preview",
+        "gemini-flash",
     ]
 
 
@@ -428,6 +434,7 @@ def test_cleanup_transcript_splits_long_transcripts_into_multiple_requests(monke
         transcript=transcript,
         notes="Meeting context note.",
         model="gemini-cleanup",
+        model_fallback="gemini-flash",
     )
 
     assert cleaned == "cleaned chunk one\n\ncleaned chunk two"
@@ -445,6 +452,7 @@ def test_cleanup_transcript_uses_detected_language_without_translation(monkeypat
         transcript="**Spreker 0**\nHallo daar",
         language="nl",
         model="gemini-cleanup",
+        model_fallback="gemini-flash",
     )
 
     assert cleaned == "Schoongemaakte transcriptie"

@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FiberyTranscript</title>
-    <link rel="icon" type="image/x-icon" href="icon.ico?v=1.4.4">
-    <link rel="icon" type="image/png" sizes="32x32" href="icon.png?v=1.4.4">
-    <link rel="icon" type="image/svg+xml" href="icon.svg?v=1.4.4">
-    <link rel="stylesheet" href="css/styles.css?v=1.4.4">
+    <link rel="icon" type="image/x-icon" href="icon.ico?v=1.4.5">
+    <link rel="icon" type="image/png" sizes="32x32" href="icon.png?v=1.4.5">
+    <link rel="icon" type="image/svg+xml" href="icon.svg?v=1.4.5">
+    <link rel="stylesheet" href="css/styles.css?v=1.4.5">
 </head>
 <body data-theme="dark">
     <!-- Header Toolbar -->
@@ -46,7 +46,10 @@
                 <span class="fibery-select-hint" id="fiberySelectHint">Browse to a meeting in the panel →</span>
                 <!-- Select meeting from panel (hidden until panel shows a valid entity) -->
                 <div class="fibery-select-row hidden" id="fiberySelectRow">
-                    <button class="action-btn" id="selectMeetingBtn" disabled>Select current meeting →</button>
+                    <button class="action-btn" id="selectMeetingBtn" disabled>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                        <span id="selectMeetingBtnLabel">Select Current Meeting</span>
+                    </button>
                 </div>
                 <!-- Divider -->
                 <div class="section-divider" id="createMeetingDividerRow">
@@ -176,8 +179,8 @@
                                 <button class="link-btn" id="clearUploadBtn">Clear</button>
                             </div>
                             <div class="collapsible collapsed" id="audioStorageCollapsible">
-                                <div class="audio-storage-group" id="audioStorageGroup">
-                                    <span class="audio-storage-label">Save to Fibery</span>
+                                <div class="option-row" id="audioStorageGroup">
+                                    <span class="option-label">Save to Fibery</span>
                                     <div class="summary-style-options" role="radiogroup" aria-label="Audio storage">
                                         <div class="summary-style-option">
                                             <input type="radio" id="storageLocal" name="audioStorage" value="local" checked>
@@ -211,8 +214,8 @@
                 <h2>Transcribe</h2>
             </div>
             <div class="step-body">
-                <div class="transcript-mode-controls">
-                    <span class="transcript-mode-label">What was recorded</span>
+                <div class="option-row">
+                    <span class="option-label">What was recorded?</span>
                     <div class="summary-style-options" role="radiogroup" aria-label="Recording mode">
                         <div class="summary-style-option">
                             <input type="radio" id="recordingModeMicOnly" name="recordingMode" value="mic_only" checked>
@@ -220,12 +223,12 @@
                         </div>
                         <div class="summary-style-option">
                             <input type="radio" id="recordingModeMicAndSpeakers" name="recordingMode" value="mic_and_speakers">
-                            <label for="recordingModeMicAndSpeakers">Mic + speakers</label>
+                            <label for="recordingModeMicAndSpeakers">Mic + Speakers</label>
                         </div>
                     </div>
                 </div>
-                <div class="transcript-mode-controls">
-                    <span class="transcript-mode-label">New transcript</span>
+                <div class="option-row">
+                    <span class="option-label">New transcript</span>
                     <div class="summary-style-options" role="radiogroup" aria-label="Transcript mode">
                         <div class="summary-style-option">
                             <input type="radio" id="modeAppend" name="transcriptMode" value="append" checked>
@@ -237,7 +240,12 @@
                         </div>
                     </div>
                 </div>
-                <button class="action-btn primary-btn" id="transcribeBtn">Transcribe</button>
+            </div>
+            <div class="transcribe-actions">
+                <button class="action-btn primary-btn" id="transcribeBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                    <span id="transcribeBtnLabel">Transcribe</span>
+                </button>
             </div>
         </section>
         </div>
@@ -259,32 +267,8 @@
             <div class="step-body">
                 <!-- Additional instructions for summarization -->
                 <div class="instructions-group">
-                    <div class="summary-style-group">
-                        <span class="summary-style-label">Prompt Type</span>
-                        <div class="summary-style-options multi-select" role="group" aria-label="Prompt type">
-                            <div class="summary-style-option">
-                                <input type="checkbox" id="promptTypeSummarize" name="promptType" value="summarize" checked>
-                                <label for="promptTypeSummarize">Summarize</label>
-                            </div>
-                            <div class="summary-style-option">
-                                <input type="checkbox" id="promptTypeInterview" name="promptType" value="interview">
-                                <label for="promptTypeInterview">Problem Interview</label>
-                            </div>
-                            <div class="summary-style-option">
-                                <input type="checkbox" id="promptTypeShareable" name="promptType" value="shareable">
-                                <label for="promptTypeShareable">Shareable</label>
-                            </div>
-                            <div class="summary-style-option">
-                                <input type="checkbox" id="promptTypeCustom" name="promptType" value="custom">
-                                <label for="promptTypeCustom">Custom</label>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="customPromptGroup" class="custom-prompt-group hidden">
-                        <textarea id="additionalPrompt" placeholder="Enter your custom instructions for the AI summarizer." rows="3"></textarea>
-                    </div>
-                    <div class="summary-style-group">
-                        <span class="summary-style-label">Summary Style</span>
+                    <div class="option-row">
+                        <span class="option-label">Style</span>
                         <div class="summary-style-options" role="radiogroup" aria-label="Summary style">
                             <div class="summary-style-option">
                                 <input type="radio" id="summaryStyleNormal" name="summaryStyle" value="normal" checked>
@@ -300,8 +284,8 @@
                             </div>
                         </div>
                     </div>
-                    <div class="summary-style-group">
-                        <span class="summary-style-label">Language</span>
+                    <div class="option-row">
+                        <span class="option-label">Language</span>
                         <div class="summary-style-options" role="radiogroup" aria-label="Summary language">
                             <div class="summary-style-option">
                                 <input type="radio" id="summaryLanguageEnglish" name="summaryLanguage" value="en" checked>
@@ -313,8 +297,8 @@
                             </div>
                         </div>
                     </div>
-                    <div class="summary-style-group">
-                        <span class="summary-style-label">Summary</span>
+                    <div class="option-row">
+                        <span class="option-label">Write</span>
                         <div class="summary-style-options" role="radiogroup" aria-label="Summary mode">
                             <div class="summary-style-option">
                                 <input type="radio" id="summaryModeAppend" name="summaryMode" value="append" checked>
@@ -326,12 +310,37 @@
                             </div>
                         </div>
                     </div>
+                    <div class="setting-group">
+                        <h3>Prompt selection</h3>
+                        <div class="summary-style-options multi-select" role="group" aria-label="Prompt type">
+                            <div class="summary-style-option">
+                                <input type="checkbox" id="promptTypeSummarize" name="promptType" value="summarize" checked>
+                                <label for="promptTypeSummarize">Summary</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="checkbox" id="promptTypeInterview" name="promptType" value="interview">
+                                <label for="promptTypeInterview">Interview</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="checkbox" id="promptTypeShareable" name="promptType" value="shareable">
+                                <label for="promptTypeShareable">Shareable</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="checkbox" id="promptTypeCustom" name="promptType" value="custom">
+                                <label for="promptTypeCustom">Custom...</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="customPromptGroup" class="custom-prompt-group hidden">
+                        <textarea id="additionalPrompt" placeholder="Enter your custom instructions for the AI summarizer." rows="3"></textarea>
+                    </div>
                 </div>
-
-                <!-- Action buttons (shown after processing completes) -->
                 <div class="send-actions" id="sendActions">
                     <div class="send-row">
-                        <button class="action-btn primary-btn" id="summarizeBtn">Summarize</button>
+                        <button class="action-btn primary-btn" id="summarizeBtn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                            <span id="summarizeBtnLabel">Summarize</span>
+                        </button>
                         <div class="copy-links">
                             <button class="link-btn" id="copyTranscriptBtn" title="Copy raw transcript">Copy Transcript</button>
                             <button class="link-btn" id="copySummaryBtn" title="Copy AI summary" disabled>Copy Summary</button>
@@ -345,7 +354,10 @@
                         <button class="action-btn small-btn" id="retryAudioUploadBtn" style="display:none;">Retry Audio Upload</button>
                     </div>
                     <div class="problems-row hidden" id="problemsRow">
-                        <button class="action-btn primary-btn" id="generateProblemsBtn">Generate Problems</button>
+                        <button class="action-btn primary-btn" id="generateProblemsBtn">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <span id="generateProblemsBtnLabel">Generate Problems</span>
+                        </button>
                         <div class="problems-status" id="problemsStatus"></div>
                     </div>
                 </div>
@@ -378,10 +390,6 @@
                         <label for="minimizeToTray">Minimize to tray on close</label>
                         <input type="checkbox" id="minimizeToTray" />
                     </div>
-                    <div class="setting-row checkbox-row">
-                        <label for="saveRecordings">Save all processed audio recordings</label>
-                        <input type="checkbox" id="saveRecordings" checked />
-                    </div>
                     <div class="setting-row" id="recordingsDirRow">
                         <label for="recordingsDir">Recordings folder</label>
                         <div class="folder-picker">
@@ -412,6 +420,24 @@
                         <input type="text" id="displayName" placeholder="Your Fibery username (usually your first name)" />
                     </div>
                 </div>
+
+                <div class="setting-group">
+                    <h3>Company Context</h3>
+                    <div class="setting-row">
+                        <label for="settingsCompanyContext">Prompt</label>
+                        <textarea id="settingsCompanyContext" rows="4" placeholder="Company-specific context for AI summarization..."></textarea>
+                    </div>
+                </div>
+
+                <button class="advanced-settings-toggle" id="advancedSettingsToggle" aria-expanded="false">
+                    <span class="advanced-settings-label">Advanced Settings</span>
+                    <svg class="chevron-icon" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+                <div class="collapsible collapsed" id="advancedSettingsContent">
+                  <div>
+
                 <div class="setting-group">
                     <h3>Live Recording Cleanup</h3>
                     <p class="setting-note">Improves the audio file sent to the AI.</p>
@@ -425,14 +451,18 @@
                     </div>
                 </div>
                 <div class="setting-group">
-                    <h3>Extra Post-Processing</h3>
-                    <p class="setting-note">Optional cleanup steps after recording or uploading.</p>
+                    <h3>Post-Processing</h3>
+                    <p class="setting-note">Optional steps after recording or uploading.</p>
                     <div class="setting-row checkbox-row">
-                        <label for="audioTranscriptCleanupEnabled">Also send audio to Gemini during transcript improvement</label>
+                        <label for="saveRecordings">Save all processed audio recordings</label>
+                        <input type="checkbox" id="saveRecordings" />
+                    </div>
+                    <div class="setting-row checkbox-row">
+                        <label for="audioTranscriptCleanupEnabled">Send audio to Gemini for transcript cleanup improvement</label>
                         <input type="checkbox" id="audioTranscriptCleanupEnabled" />
                     </div>
                     <div class="setting-row checkbox-row">
-                        <label for="postProcessingEnabled">Enable audio post-processing, pick options below</label>
+                        <label for="postProcessingEnabled">Enable audio post-processing, pick options below:</label>
                         <input type="checkbox" id="postProcessingEnabled" />
                     </div>
                     <div class="setting-subgroup" id="postProcessingOptions">
@@ -493,13 +523,8 @@
                         <input type="text" id="settingsGeminiCleanup" placeholder="e.g. gemini-3.1-flash-lite-preview" />
                     </div>
                 </div>
-                <div class="setting-group">
-                    <h3>Summarization</h3>
-                    <div class="setting-row">
-                        <label for="settingsCompanyContext">Company Context</label>
-                        <textarea id="settingsCompanyContext" rows="4" placeholder="Company-specific context for AI summarization..."></textarea>
-                    </div>
                 </div>
+                </div><!-- end advancedSettingsContent -->
             </div>
         </div>
     </div>
@@ -548,9 +573,9 @@
     <!-- Toast Notifications -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="js/audio-viz.js?v=1.4.4"></script>
-    <script src="js/transcript.js?v=1.4.4"></script>
-    <script src="js/settings.js?v=1.4.4"></script>
-    <script src="js/app.js?v=1.4.4"></script>
+    <script src="js/audio-viz.js?v=1.4.5"></script>
+    <script src="js/transcript.js?v=1.4.5"></script>
+    <script src="js/settings.js?v=1.4.5"></script>
+    <script src="js/app.js?v=1.4.5"></script>
 </body>
 </html>

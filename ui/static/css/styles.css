@@ -14,6 +14,9 @@
     --text-primary: #e0e0e0;
     --text-secondary: #a0a0b0;
     --text-muted: #606080;
+    --action: #F15A25;
+    --action-hover: #df4a14;
+    --action-glow: #f33f17;
     --accent: #4fc3f7;
     --accent-hover: #29b6f6;
     --accent-glow: rgba(79, 195, 247, 0.35);
@@ -38,6 +41,9 @@
     --text-primary: #212121;
     --text-secondary: #616161;
     --text-muted: #9e9e9e;
+    --action: #F15A25;
+    --action-hover: #df4a14;
+    --action-glow: #f33f17;
     --accent: #1976d2;
     --accent-hover: #1565c0;
     --accent-glow: rgba(25, 118, 210, 0.22);
@@ -337,9 +343,9 @@ select.device-warning-yellow:focus {
     display: flex;
     align-items: center;
     gap: 8px;
-    background: var(--accent);
-    color: white;
-    border: none;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--action);
     padding: 10px 24px;
     border-radius: var(--radius-sm);
     font-size: 14px;
@@ -350,7 +356,9 @@ select.device-warning-yellow:focus {
 }
 
 .record-btn:hover {
-    background: var(--accent-hover);
+    background: var(--action-hover);
+    color: white;
+
 }
 
 .record-btn.recording {
@@ -391,7 +399,7 @@ select.device-warning-yellow:focus {
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: white;
+    background: var(--danger);
     transition: border-radius var(--transition);
 }
 
@@ -411,19 +419,17 @@ select.device-warning-yellow:focus {
     letter-spacing: 1px;
 }
 
-/* === Audio Storage Toggle === */
-.audio-storage-group {
+/* === Inline Option Row (label left, options right) === */
+.option-row {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding-top: 4px;
+    margin: 6px 0px 0px 0px;
 }
 
-.audio-storage-label {
+.option-label {
     font-size: 11px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
     color: var(--text-secondary);
 }
 
@@ -511,22 +517,6 @@ select.device-warning-yellow:focus {
     color: var(--text-muted);
 }
 
-.transcript-mode-controls {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.transcript-mode-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.transcript-mode-controls .summary-style-options {
-    flex-shrink: 0;
-}
 
 /* === Step Panels (flat, no cards — full-width dividers between sections) === */
 .step-panel {
@@ -560,7 +550,7 @@ select.device-warning-yellow:focus {
     justify-content: center;
     width: 16px;
     height: 16px;
-    color: var(--accent);
+    color: var(--text-primary);
     flex-shrink: 0;
 }
 
@@ -605,6 +595,11 @@ select.device-warning-yellow:focus {
 
 .fibery-url-row input {
     flex: 1;
+}
+
+.transcribe-actions {
+    display: flex;
+    margin: 16px 0px 4px 0px;
 }
 
 /* === Entity Info (shown after validation) === */
@@ -658,9 +653,9 @@ select.device-warning-yellow:focus {
 }
 
 .create-meeting-btn {
-    background: var(--bg-surface);
+    background: var(--accent);
     border: 1px solid var(--border);
-    color: var(--text-secondary);
+    color: var(--bg-input);
     font-size: 11px;
     padding: 4px 10px;
     border-radius: var(--radius-sm);
@@ -747,28 +742,13 @@ textarea::placeholder {
 .instructions-group {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 8px;
+    margin: 20px 0;
 }
 
 .instructions-group label {
     font-size: 11px;
     font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--text-secondary);
-}
-
-.summary-style-group {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.summary-style-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
     color: var(--text-secondary);
 }
 
@@ -778,7 +758,6 @@ textarea::placeholder {
     align-items: stretch;
     border: 1px solid var(--border);
     border-radius: 999px;
-    overflow: hidden;
     background: var(--bg-input);
     gap: 0;
 }
@@ -826,16 +805,36 @@ textarea::placeholder {
 
 .summary-style-option input[type="radio"]:checked + label,
 .summary-style-option input[type="checkbox"]:checked + label {
-    background: var(--accent);
-    color: #fff;
+    background: var(--bg-surface);
+    color: var(--text-primary);
     font-weight: 600;
-    box-shadow: inset 0 0 0 1px var(--accent);
+    border: #1565c0 1px solid;
+    border-radius: 999px;
+    /* box-shadow: inset 0 0 0 1px var(--accent); */
 }
 
 .summary-style-option input[type="radio"]:focus-visible + label,
 .summary-style-option input[type="checkbox"]:focus-visible + label {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
+}
+
+/* Multi-select variant: square edges with tiny gaps between options */
+.summary-style-options.multi-select {
+    border-radius: 0;
+    gap: 5px;
+    border: none;
+    background: transparent;
+}
+
+.summary-style-options.multi-select .summary-style-option label {
+    border-left: none;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+}
+
+.summary-style-options.multi-select .summary-style-option input[type="checkbox"]:checked + label {
+    border-color: var(--accent);
 }
 
 .custom-prompt-group {
@@ -845,12 +844,8 @@ textarea::placeholder {
     display: none;
 }
 
-/* === Send Actions (hidden until processing complete) === */
+/* === Send Actions === */
 #sendActions {
-    display: none;
-}
-
-#sendActions.visible {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -959,9 +954,13 @@ textarea::placeholder {
 
 /* === Action Button === */
 .action-btn {
-    background: var(--accent);
-    color: white;
-    border: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--action);
     padding: 8px 20px;
     border-radius: var(--radius-sm);
     font-size: 13px;
@@ -972,7 +971,8 @@ textarea::placeholder {
 }
 
 .action-btn:hover {
-    background: var(--accent-hover);
+    background: var(--action-hover);
+    color: white;
 }
 
 .action-btn:disabled {
@@ -981,8 +981,8 @@ textarea::placeholder {
 }
 
 .action-btn.processing {
-    background: var(--accent-hover);
-    box-shadow: 0 0 0 1px var(--accent), 0 0 18px var(--accent-glow);
+    background: var(--action-hover);
+    box-shadow: 0 0 0 1px var(--action), 0 0 18px var(--action-glow);
     animation: action-processing-pulse 1.6s ease-in-out infinite;
     cursor: default;
     pointer-events: none;
@@ -991,11 +991,11 @@ textarea::placeholder {
 
 @keyframes action-processing-pulse {
     0%, 100% {
-        box-shadow: 0 0 0 1px var(--accent), 0 0 10px var(--accent-glow);
+        box-shadow: 0 0 0 1px var(--action), 0 0 10px var(--action-glow);
         transform: translateY(0);
     }
     50% {
-        box-shadow: 0 0 0 2px var(--accent), 0 0 22px var(--accent-glow);
+        box-shadow: 0 0 0 2px var(--action), 0 0 22px var(--action-glow);
         transform: translateY(-1px);
     }
 }
@@ -1125,7 +1125,8 @@ textarea::placeholder {
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--text-secondary);
-    margin-bottom: 12px;
+    margin-top: 18px;
+    margin-bottom: 14px;
 }
 
 .setting-row {
@@ -1140,6 +1141,39 @@ textarea::placeholder {
     color: var(--text-secondary);
     line-height: 1.5;
     margin-bottom: 12px;
+}
+
+.advanced-settings-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    width: 100%;
+    padding: 8px 0;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.advanced-settings-toggle:hover {
+    color: var(--text-primary);
+}
+
+.advanced-settings-toggle .chevron-icon {
+    width: 14px;
+    height: 14px;
+    transition: transform 0.2s ease;
+    margin-left: auto;
+}
+
+.advanced-settings-toggle[aria-expanded="true"] .chevron-icon {
+    transform: rotate(180deg);
 }
 
 .setting-subgroup {
