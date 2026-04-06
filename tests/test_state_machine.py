@@ -145,7 +145,9 @@ class TestResetSession:
         app._recording_segments = [Path("seg1.wav")]
         app._sleeping = True
         app._transcript_mode = "replace"
+        app._recording_mode = "mic_and_speakers"
         app._summary_mode = "replace"
+        app._summary_language = "nl"
 
         app.reset_session()
 
@@ -157,7 +159,9 @@ class TestResetSession:
         assert app._recording_segments == []
         assert app._sleeping is False
         assert app._transcript_mode == "append"
+        assert app._recording_mode == "mic_only"
         assert app._summary_mode == "append"
+        assert app._summary_language == "en"
 
 
 class TestMeetingLinkState:
@@ -232,6 +236,18 @@ class TestLinkedTranscriptSummary:
             ai_summary="Summary text",
             append=False,
         )
+
+    def test_generate_summary_remembers_summary_language_within_session(self):
+        app = _make_app()
+        app._linked_transcript_text = "Existing Fibery transcript"
+
+        with patch("app.get_key", return_value="gemini-key"):
+            with patch("integrations.gemini_client.summarize_transcript", return_value="Summary text") as summarize:
+                result = app.generate_summary(summary_language="nl")
+
+        assert result["success"] is True
+        assert summarize.call_args.kwargs["summary_language"] == "nl"
+        assert app._summary_language == "nl"
 
     def test_send_pending_summary_uses_summary_mode(self):
         app = _make_app()
@@ -517,6 +533,8 @@ class TestUploadedArtifactCleanup:
             generated = [
                 source.with_suffix(".ogg"),
                 source.with_suffix(".flac"),
+                source.parent / "meeting_mono_input.wav",
+                source.parent / "meeting_mono_input.ogg",
                 source.parent / "meeting_processed.wav",
                 source.parent / "meeting_processed.ogg",
             ]
@@ -544,6 +562,8 @@ class TestRecordedArtifactCleanup:
             generated = [
                 source.with_suffix(".ogg"),
                 source.with_suffix(".flac"),
+                source.parent / "meeting_mono_input.wav",
+                source.parent / "meeting_mono_input.ogg",
                 source.parent / "meeting_processed.ogg",
                 source.parent / "meeting_processed.flac",
             ]

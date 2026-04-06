@@ -4,10 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FiberyTranscript</title>
-    <link rel="icon" type="image/x-icon" href="icon.ico?v=1.4.3">
-    <link rel="icon" type="image/png" sizes="32x32" href="icon.png?v=1.4.3">
-    <link rel="icon" type="image/svg+xml" href="icon.svg?v=1.4.3">
-    <link rel="stylesheet" href="css/styles.css?v=1.4.3">
+    <link rel="icon" type="image/x-icon" href="icon.ico?v=1.4.4">
+    <link rel="icon" type="image/png" sizes="32x32" href="icon.png?v=1.4.4">
+    <link rel="icon" type="image/svg+xml" href="icon.svg?v=1.4.4">
+    <link rel="stylesheet" href="css/styles.css?v=1.4.4">
 </head>
 <body data-theme="dark">
     <!-- Header Toolbar -->
@@ -212,6 +212,19 @@
             </div>
             <div class="step-body">
                 <div class="transcript-mode-controls">
+                    <span class="transcript-mode-label">What was recorded</span>
+                    <div class="summary-style-options" role="radiogroup" aria-label="Recording mode">
+                        <div class="summary-style-option">
+                            <input type="radio" id="recordingModeMicOnly" name="recordingMode" value="mic_only" checked>
+                            <label for="recordingModeMicOnly">Mic only</label>
+                        </div>
+                        <div class="summary-style-option">
+                            <input type="radio" id="recordingModeMicAndSpeakers" name="recordingMode" value="mic_and_speakers">
+                            <label for="recordingModeMicAndSpeakers">Mic + speakers</label>
+                        </div>
+                    </div>
+                </div>
+                <div class="transcript-mode-controls">
                     <span class="transcript-mode-label">New transcript</span>
                     <div class="summary-style-options" role="radiogroup" aria-label="Transcript mode">
                         <div class="summary-style-option">
@@ -262,6 +275,19 @@
                             <div class="summary-style-option">
                                 <input type="radio" id="summaryStyleMinimal" name="summaryStyle" value="minimal">
                                 <label for="summaryStyleMinimal">Minimal</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="summary-style-group">
+                        <span class="summary-style-label">Language</span>
+                        <div class="summary-style-options" role="radiogroup" aria-label="Summary language">
+                            <div class="summary-style-option">
+                                <input type="radio" id="summaryLanguageEnglish" name="summaryLanguage" value="en" checked>
+                                <label for="summaryLanguageEnglish">English</label>
+                            </div>
+                            <div class="summary-style-option">
+                                <input type="radio" id="summaryLanguageDutch" name="summaryLanguage" value="nl">
+                                <label for="summaryLanguageDutch">Dutch</label>
                             </div>
                         </div>
                     </div>
@@ -496,9 +522,9 @@
     <!-- Toast Notifications -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="js/audio-viz.js?v=1.4.3"></script>
-    <script src="js/transcript.js?v=1.4.3"></script>
-    <script src="js/settings.js?v=1.4.3"></script>
-    <script src="js/app.js?v=1.4.3"></script>
+    <script src="js/audio-viz.js?v=1.4.4"></script>
+    <script src="js/transcript.js?v=1.4.4"></script>
+    <script src="js/settings.js?v=1.4.4"></script>
+    <script src="js/app.js?v=1.4.4"></script>
 </body>
 </html>

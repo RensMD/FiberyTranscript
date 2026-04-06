@@ -115,6 +115,8 @@ def test_transcribe_uses_precompressed_audio_when_post_processing_is_off():
         assert calls["upload_path"] == str(ogg_path)
         assert calls["config"]["multichannel"] is True
         assert calls["config"]["speaker_labels"] is True
+        assert calls["config"]["speech_models"] == ["universal-3-pro", "universal-2"]
+        assert calls["config"]["language_detection"] is True
         assert result["audio_path"] == str(ogg_path)
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -217,6 +219,77 @@ def test_transcribe_keeps_precompressed_fallback_when_post_processor_returns_ori
 
         assert calls["upload_path"] == str(ogg_path)
         assert result["audio_path"] == str(ogg_path)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_transcribe_downmixes_stereo_for_mic_only_mode():
+    root = _make_test_root("test_post_processing_downmixes_mic_only")
+    try:
+        wav_path = root / "meeting.wav"
+        wav_path.write_bytes(b"wav")
+        mono_wav = root / "meeting_mono_input.wav"
+        mono_wav.write_bytes(b"mono")
+        mono_ogg = root / "meeting_mono_input.ogg"
+        mono_ogg.write_bytes(b"mono-ogg")
+        calls = {}
+
+        fake_soundfile = types.SimpleNamespace(
+            info=lambda path: types.SimpleNamespace(channels=2 if str(path) == str(wav_path) else 1),
+        )
+
+        with patch.dict(sys.modules, {
+            "assemblyai": _fake_assemblyai(calls),
+            "soundfile": fake_soundfile,
+        }, clear=False):
+            with patch.object(batch, "_downmix_to_mono_wav", return_value=str(mono_wav)) as downmix_mock:
+                with patch.object(batch, "_compress_audio", return_value=str(mono_ogg)) as compress_mock:
+                    result = batch.transcribe_with_diarization(
+                        api_key="test-key",
+                        audio_path=str(wav_path),
+                        post_process=False,
+                        recording_mode="mic_only",
+                    )
+
+        downmix_mock.assert_called_once_with(str(wav_path))
+        compress_mock.assert_called_once_with(str(mono_wav))
+        assert calls["upload_path"] == str(mono_ogg)
+        assert "multichannel" not in calls["config"]
+        assert result["effective_recording_mode"] == "mic_only"
+        assert result["audio_path"] == str(mono_ogg)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_transcribe_keeps_multichannel_for_distinct_speakers_mode():
+    root = _make_test_root("test_post_processing_keeps_multichannel")
+    try:
+        wav_path = root / "meeting.wav"
+        ogg_path = root / "meeting.ogg"
+        wav_path.write_bytes(b"wav")
+        ogg_path.write_bytes(b"ogg")
+        calls = {}
+
+        fake_soundfile = types.SimpleNamespace(
+            info=lambda _path: types.SimpleNamespace(channels=2),
+        )
+
+        with patch.dict(sys.modules, {
+            "assemblyai": _fake_assemblyai(calls),
+            "soundfile": fake_soundfile,
+        }, clear=False):
+            with patch.object(batch, "_downmix_to_mono_wav", side_effect=AssertionError("unexpected downmix")):
+                result = batch.transcribe_with_diarization(
+                    api_key="test-key",
+                    audio_path=str(wav_path),
+                    compressed_path=str(ogg_path),
+                    post_process=False,
+                    recording_mode="mic_and_speakers",
+                )
+
+        assert calls["upload_path"] == str(ogg_path)
+        assert calls["config"]["multichannel"] is True
+        assert result["effective_recording_mode"] == "mic_and_speakers"
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

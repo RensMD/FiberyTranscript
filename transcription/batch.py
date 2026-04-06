@@ -24,6 +24,7 @@ _ECHO_MIN_TEXT_SIMILARITY = 0.96
 _ECHO_MIN_CONFIDENCE_GAP = 0.12
 _ECHO_MAX_MIC_DURATION_MS = 2200
 _ECHO_MAX_MIC_WORDS = 12
+_MONO_INPUT_SUFFIX = "_mono_input"
 
 
 def _compress_audio(wav_path: str) -> str:
@@ -127,6 +128,46 @@ def _read_audio_info(audio_path: str) -> dict:
         raise RuntimeError(f"Could not inspect audio metadata for {audio_path}: {exc}") from exc
 
 
+def _build_mono_input_path(audio_path: str) -> Path:
+    source = Path(audio_path)
+    return source.parent / f"{source.stem}{_MONO_INPUT_SUFFIX}.wav"
+
+
+def _downmix_to_mono_wav(audio_path: str) -> str:
+    """Downmix any multi-channel file to a mono WAV for single-channel transcription."""
+    output_path = _build_mono_input_path(audio_path)
+
+    try:
+        import soundfile as sf
+
+        with sf.SoundFile(audio_path, "r") as src:
+            with sf.SoundFile(
+                str(output_path),
+                "w",
+                samplerate=src.samplerate,
+                channels=1,
+                format="WAV",
+                subtype="PCM_16",
+            ) as dst:
+                while True:
+                    chunk = src.read(_COMPRESS_CHUNK_FRAMES, dtype="float32", always_2d=True)
+                    if len(chunk) == 0:
+                        break
+                    dst.write(chunk.mean(axis=1))
+        return str(output_path)
+    except Exception:
+        logger.debug("soundfile mono downmix failed for %s", audio_path, exc_info=True)
+
+    try:
+        from pydub import AudioSegment
+
+        audio = AudioSegment.from_file(audio_path)
+        audio.set_channels(1).export(str(output_path), format="wav")
+        return str(output_path)
+    except Exception as exc:
+        raise RuntimeError(f"Could not downmix audio to mono for transcription: {exc}") from exc
+
+
 def _prepare_upload_path(
     audio_path: str,
     compressed_path: Optional[str],
@@ -210,6 +251,20 @@ def _build_config_kwargs(
         logger.info("Word boost: %d terms", len(word_boost))
     _apply_speaker_hints(config_kwargs, speaker_hints, multichannel=multichannel)
     return config_kwargs
+
+
+def _resolve_speech_model_used(transcript, config_kwargs: dict) -> str:
+    """Return the best available model identifier for logs/debugging."""
+    resolved = getattr(transcript, "speech_model", "") or ""
+    if resolved:
+        return resolved
+
+    requested = list(config_kwargs.get("speech_models") or [])
+    if len(requested) == 1:
+        return requested[0]
+    if len(requested) > 1:
+        return "auto"
+    return ""
 
 
 def _upload_and_transcribe(
@@ -449,6 +504,7 @@ def transcribe_with_diarization(
     word_boost: Optional[list[str]] = None,
     speaker_hints: Optional[dict] = None,
     remove_echo: bool = False,
+    recording_mode: str = "mic_and_speakers",
     post_process: bool = True,
     post_process_settings: Optional[dict] = None,
 ) -> dict:
@@ -475,7 +531,22 @@ def transcribe_with_diarization(
 
     audio_info = _read_audio_info(audio_path)
     channel_count = audio_info.get("channels", 1)
-    is_multichannel = channel_count >= 2
+    requested_recording_mode = (
+        recording_mode if recording_mode in ("mic_only", "mic_and_speakers") else "mic_and_speakers"
+    )
+    effective_recording_mode = (
+        "mic_and_speakers" if requested_recording_mode == "mic_and_speakers" and channel_count >= 2 else "mic_only"
+    )
+    is_multichannel = effective_recording_mode == "mic_and_speakers"
+
+    if effective_recording_mode == "mic_only" and channel_count >= 2:
+        if on_progress:
+            on_progress("Preparing mono transcription input...")
+        audio_path = _downmix_to_mono_wav(audio_path)
+        compressed_path = None
+        audio_info = _read_audio_info(audio_path)
+        channel_count = audio_info.get("channels", 1)
+        logger.info("Downmixed %s to mono for mic-only transcription", Path(audio_path).name)
 
     if remove_echo and is_multichannel:
         if on_progress:
@@ -488,6 +559,7 @@ def transcribe_with_diarization(
 
         with tempfile.TemporaryDirectory(prefix="fibery_echo_") as temp_dir:
             mono_paths = _split_stereo_to_mono_wavs(audio_path, temp_dir)
+            speech_model_used = ""
 
             for channel_index, mono_path in enumerate(mono_paths):
                 channel_label = "microphone channel" if channel_index == 0 else "speaker channel"
@@ -505,6 +577,7 @@ def transcribe_with_diarization(
                     on_progress,
                     f"Transcribing {channel_label}...",
                 )
+                speech_model_used = speech_model_used or _resolve_speech_model_used(transcript, config_kwargs)
                 all_utterances.extend(_extract_utterances(transcript, channel=channel_index))
                 languages.append(getattr(transcript, "language_code", "unknown"))
 
@@ -534,7 +607,9 @@ def transcribe_with_diarization(
                 if utterance.get("text", "").strip()
             ),
             "language": next((lang for lang in languages if lang and lang != "unknown"), "unknown"),
+            "speech_model_used": speech_model_used,
             "audio_path": stable_audio_path,
+            "effective_recording_mode": effective_recording_mode,
         }
 
     upload_path = _prepare_upload_path(audio_path, compressed_path, on_progress)
@@ -563,5 +638,7 @@ def transcribe_with_diarization(
         "utterances": _extract_utterances(transcript),
         "full_text": transcript.text or "",
         "language": getattr(transcript, "language_code", "unknown"),
+        "speech_model_used": _resolve_speech_model_used(transcript, config_kwargs),
         "audio_path": upload_path,
+        "effective_recording_mode": effective_recording_mode,
     }

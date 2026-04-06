@@ -43,6 +43,7 @@ class TranscriptionOptions:
     remove_echo: bool = False
     improve_with_context: bool = True
     transcript_mode: str = "append"
+    recording_mode: str = "mic_only"
 
 
 def _friendly_error(e: Exception) -> str:
@@ -155,8 +156,12 @@ class FiberyTranscriptApp:
 
         # Append/replace mode for Fibery transcript writes (per-meeting, not persisted)
         self._transcript_mode: str = "append"  # "append" or "replace"
+        # Recording mode for AssemblyAI routing (per-meeting, not persisted)
+        self._recording_mode: str = "mic_only"  # "mic_only" or "mic_and_speakers"
         # Append/replace mode for Fibery summary writes (per-meeting, not persisted)
         self._summary_mode: str = "append"  # "append" or "replace"
+        # Summary output language (per-meeting, not persisted)
+        self._summary_language: str = "en"  # "en" or "nl"
 
         # Lock refresh tracking (refresh every 10 min during long recordings)
         self._last_lock_refresh: float = 0.0
@@ -245,13 +250,148 @@ class FiberyTranscriptApp:
         info = self._validate_audio_file(file_path) or {}
         if not isinstance(info, dict):
             info = {}
+        recording_mode_meta = self._recommend_recording_mode(
+            file_path,
+            int(info.get("channels", 1) or 1),
+            is_uploaded_file=is_uploaded_file,
+        )
         info.update({
             "file_path": str(file_path),
             "file_name": file_path.name,
             "is_uploaded_file": is_uploaded_file,
             "can_remove_echo": info.get("channels", 1) >= 2,
+            **recording_mode_meta,
         })
         return info
+
+    def _classify_stereo_layout_from_samples(self, left_channel, right_channel) -> str:
+        """Classify whether stereo channels are duplicated, silent, or distinct."""
+        import numpy as np
+
+        left = np.asarray(left_channel, dtype=np.float32).reshape(-1)
+        right = np.asarray(right_channel, dtype=np.float32).reshape(-1)
+        sample_count = min(left.size, right.size)
+        if sample_count == 0:
+            return "split_stereo"
+
+        left = left[:sample_count]
+        right = right[:sample_count]
+
+        left_rms = float(np.sqrt(np.mean(np.square(left))))
+        right_rms = float(np.sqrt(np.mean(np.square(right))))
+        louder = max(left_rms, right_rms, 1e-9)
+        quieter_ratio = min(left_rms, right_rms) / louder
+        if quieter_ratio <= 0.15:
+            return "single_sided_stereo"
+
+        left_centered = left - float(np.mean(left))
+        right_centered = right - float(np.mean(right))
+        left_std = float(np.std(left_centered))
+        right_std = float(np.std(right_centered))
+        if left_std < 1e-6 and right_std < 1e-6:
+            correlation = 1.0 if np.allclose(left, right) else 0.0
+        elif left_std < 1e-6 or right_std < 1e-6:
+            correlation = 0.0
+        else:
+            correlation = float(np.corrcoef(left_centered, right_centered)[0, 1])
+
+        if correlation >= 0.98 and quieter_ratio >= 0.85:
+            return "dual_mono"
+        return "split_stereo"
+
+    def _analyze_uploaded_stereo_layout(self, file_path: Path) -> str:
+        """Inspect an uploaded stereo file to see if channels are actually distinct."""
+        import numpy as np
+
+        max_frames = 16000 * 90
+        try:
+            import soundfile as sf
+
+            with sf.SoundFile(str(file_path), "r") as src:
+                if int(src.channels) < 2:
+                    return "mono"
+                frames_to_read = min(len(src), max_frames)
+                sample_data = src.read(frames_to_read, dtype="float32", always_2d=True)
+                if sample_data.shape[1] < 2:
+                    return "mono"
+                return self._classify_stereo_layout_from_samples(sample_data[:, 0], sample_data[:, 1])
+        except Exception:
+            logger.debug("soundfile stereo layout analysis failed for %s", file_path, exc_info=True)
+
+        try:
+            from pydub import AudioSegment
+
+            audio = AudioSegment.from_file(str(file_path))
+            if audio.channels < 2:
+                return "mono"
+            audio = audio[:90000]
+            mono_tracks = audio.split_to_mono()
+            if len(mono_tracks) < 2:
+                return "mono"
+            scale = float(1 << (8 * mono_tracks[0].sample_width - 1))
+            left = np.array(mono_tracks[0].get_array_of_samples(), dtype=np.float32) / scale
+            right = np.array(mono_tracks[1].get_array_of_samples(), dtype=np.float32) / scale
+            return self._classify_stereo_layout_from_samples(left, right)
+        except Exception:
+            logger.debug("pydub stereo layout analysis failed for %s", file_path, exc_info=True)
+
+        return "split_stereo"
+
+    def _recommend_recording_mode(self, file_path: Path, channels: int, *, is_uploaded_file: bool) -> dict:
+        """Recommend the best AssemblyAI routing mode for the staged audio."""
+        if channels <= 1:
+            return {
+                "stereo_layout": "mono",
+                "recording_mode_recommendation": "mic_only",
+                "recording_mode_reason": "Mono audio cannot be split into separate mic and speaker channels.",
+            }
+
+        if not is_uploaded_file:
+            if self._recording_channels == 2:
+                return {
+                    "stereo_layout": "split_stereo",
+                    "recording_mode_recommendation": "mic_and_speakers",
+                    "recording_mode_reason": "This recording captured mic and speakers as separate channels.",
+                }
+            return {
+                "stereo_layout": "mono",
+                "recording_mode_recommendation": "mic_only",
+                "recording_mode_reason": "This recording did not capture a loopback/speaker channel.",
+            }
+
+        stereo_layout = self._analyze_uploaded_stereo_layout(file_path)
+        if stereo_layout == "dual_mono":
+            return {
+                "stereo_layout": stereo_layout,
+                "recording_mode_recommendation": "mic_only",
+                "recording_mode_reason": "The stereo channels look nearly identical, so speakers mode would duplicate the transcript.",
+            }
+        if stereo_layout == "single_sided_stereo":
+            return {
+                "stereo_layout": stereo_layout,
+                "recording_mode_recommendation": "mic_only",
+                "recording_mode_reason": "One stereo channel is mostly silent, so speakers mode would not add useful transcript data.",
+            }
+        return {
+            "stereo_layout": stereo_layout,
+            "recording_mode_recommendation": "mic_and_speakers",
+            "recording_mode_reason": "The stereo channels appear distinct enough for separate mic and speaker transcription.",
+        }
+
+    def _normalize_recording_mode(self, requested_mode: str) -> tuple[str, bool, str]:
+        """Auto-correct obvious invalid recording-mode selections."""
+        normalized = requested_mode if requested_mode in ("mic_only", "mic_and_speakers") else self._recording_mode
+        prepared = self._prepared_audio_info or {}
+        recommendation = prepared.get("recording_mode_recommendation")
+        reason = prepared.get("recording_mode_reason", "")
+        if normalized == "mic_and_speakers" and recommendation == "mic_only":
+            logger.info("Auto-correcting recording mode to mic_only: %s", reason or "obvious mismatch")
+            return "mic_only", True, reason
+        return normalized, False, ""
+
+    def _normalize_summary_language(self, summary_language: str) -> str:
+        """Normalize summary output language to a supported code."""
+        return "nl" if (summary_language or "").strip().lower() == "nl" else "en"
 
     def _set_prepared_session(
         self,
@@ -274,6 +414,7 @@ class FiberyTranscriptApp:
             is_uploaded_file=is_uploaded_file,
         ))
         self._prepared_audio_info = self._build_prepared_audio_info(file_path, is_uploaded_file)
+        self._recording_mode = self._prepared_audio_info.get("recording_mode_recommendation", "mic_only")
         self.state = self.STATE_PREPARED
         self._resume_background_scanning()
         return self._prepared_audio_info
@@ -389,7 +530,9 @@ class FiberyTranscriptApp:
         self._milestone_recording_secs = 0.0
         self._silence_checkpoint_added = False
         self._transcript_mode = "append"
+        self._recording_mode = "mic_only"
         self._summary_mode = "append"
+        self._summary_language = "en"
         self._prepared_audio_info = None
         self.state = self.STATE_IDLE
         logger.info("Session reset (token=%d)", self._session_token)
@@ -1261,6 +1404,15 @@ class FiberyTranscriptApp:
             self.audio_capture.stop_capture()
 
         options = options or TranscriptionOptions()
+        effective_recording_mode, recording_mode_auto_corrected, recording_mode_reason = (
+            self._normalize_recording_mode(options.recording_mode)
+        )
+        options = TranscriptionOptions(
+            remove_echo=options.remove_echo,
+            improve_with_context=options.improve_with_context,
+            transcript_mode=options.transcript_mode,
+            recording_mode=effective_recording_mode,
+        )
         session = self._snapshot_session_for_transcription(self._session)
         results = session.results
         force_replace_send = results.get_transcript_sent()
@@ -1268,13 +1420,15 @@ class FiberyTranscriptApp:
 
         self._session = session
         self._transcript_mode = "replace" if force_replace_send else options.transcript_mode
+        self._recording_mode = effective_recording_mode
         self.state = self.STATE_PROCESSING
         logger.info(
-            "Transcription started: %s (remove_echo=%s, improve_with_context=%s, mode=%s)",
+            "Transcription started: %s (remove_echo=%s, improve_with_context=%s, mode=%s, recording_mode=%s)",
             Path(session.context.wav_path).name,
             options.remove_echo,
             options.improve_with_context,
             self._transcript_mode,
+            effective_recording_mode,
         )
 
         self._batch_thread = threading.Thread(
@@ -1286,6 +1440,9 @@ class FiberyTranscriptApp:
         return {
             "success": True,
             "transcript_mode": self._transcript_mode,
+            "effective_recording_mode": effective_recording_mode,
+            "recording_mode_auto_corrected": recording_mode_auto_corrected,
+            "recording_mode_reason": recording_mode_reason,
             "force_replace_send": force_replace_send,
             "prepared_audio": dict(self._prepared_audio_info or {}),
         }
@@ -1940,6 +2097,7 @@ class FiberyTranscriptApp:
                 word_boost=word_boost,
                 speaker_hints=speaker_hints,
                 remove_echo=options.remove_echo,
+                recording_mode=options.recording_mode,
                 post_process=pp_settings is not None,
                 post_process_settings=pp_settings,
             )
@@ -2171,6 +2329,7 @@ class FiberyTranscriptApp:
 
         for ext in (".wav", ".ogg", ".flac"):
             candidates.add(source.parent / f"{source.stem}_processed{ext}")
+            candidates.add(source.parent / f"{source.stem}_mono_input{ext}")
 
         if actual_audio_path:
             actual = Path(actual_audio_path)
@@ -2191,6 +2350,8 @@ class FiberyTranscriptApp:
         source = Path(wav_path)
         candidates: set[Path] = set()
 
+        for ext in (".wav", ".ogg", ".flac"):
+            candidates.add(source.parent / f"{source.stem}_mono_input{ext}")
         for ext in (".ogg", ".flac"):
             candidates.add(source.with_suffix(ext))
             candidates.add(source.parent / f"{source.stem}_processed{ext}")
@@ -2557,6 +2718,7 @@ class FiberyTranscriptApp:
         self,
         custom_prompt: str = "",
         summary_style: str = "normal",
+        summary_language: str = "",
     ) -> dict:
         """Generate an AI summary from the transcript without sending to Fibery.
 
@@ -2574,6 +2736,8 @@ class FiberyTranscriptApp:
         transcript_text = self._get_summary_source_text(session)
         if not transcript_text:
             return {"success": False, "error": "No transcript available"}
+        normalized_summary_language = self._normalize_summary_language(summary_language or self._summary_language)
+        self._summary_language = normalized_summary_language
 
         try:
             # Determine entity context for prompt (notes, interview vs meeting)
@@ -2593,7 +2757,12 @@ class FiberyTranscriptApp:
                     from integrations.context_builder import build_summary_context
                     meeting_context = build_summary_context(entity_ctx)
 
-            logger.info("Generating summary (style=%s, has_entity=%s)", summary_style, bool(entity))
+            logger.info(
+                "Generating summary (style=%s, language=%s, has_entity=%s)",
+                summary_style,
+                normalized_summary_language,
+                bool(entity),
+            )
 
             summary = summarize_transcript(
                 api_key=get_key("gemini_api_key"),
@@ -2602,6 +2771,7 @@ class FiberyTranscriptApp:
                 is_interview=is_interview,
                 custom_prompt=custom_prompt,
                 summary_style=summary_style,
+                summary_language=normalized_summary_language,
                 model=self.settings.gemini_model,
                 model_fallback=self.settings.gemini_model_fallback,
                 company_context=self.settings.company_context,
@@ -2667,6 +2837,7 @@ class FiberyTranscriptApp:
         fibery_url: str,
         custom_prompt: str = "",
         summary_style: str = "normal",
+        summary_language: str = "",
     ) -> dict:
         """Summarize transcript with Gemini and update the AI Summary field in Fibery."""
 
@@ -2679,6 +2850,8 @@ class FiberyTranscriptApp:
         transcript_text = self._get_summary_source_text(session)
         if not transcript_text:
             return {"success": False, "error": "No transcript available"}
+        normalized_summary_language = self._normalize_summary_language(summary_language or self._summary_language)
+        self._summary_language = normalized_summary_language
 
         if session_results and not session_results.try_start_summary_send():
             logger.info("Summary send already in-flight, skipping")
@@ -2715,6 +2888,7 @@ class FiberyTranscriptApp:
                 is_interview=is_interview,
                 custom_prompt=custom_prompt,
                 summary_style=summary_style,
+                summary_language=normalized_summary_language,
                 model=self.settings.gemini_model,
                 model_fallback=self.settings.gemini_model_fallback,
                 company_context=self.settings.company_context,

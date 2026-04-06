@@ -6,7 +6,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 
 DEFAULT_CLEANUP_MODEL = "gemini-3.1-flash-lite-preview"
-_LEGACY_CLEANUP_MODEL_DEFAULT = "gemini-2.5-flash-lite"
+_RETIRED_CLEANUP_MODELS = {"gemini-2.5-flash-lite"}
 
 
 @dataclass
@@ -61,7 +61,7 @@ class Settings:
                 known_fields = cls.__dataclass_fields__
                 filtered = {k: v for k, v in data.items() if k in known_fields}
                 settings = cls(**filtered)
-                if settings.gemini_model_cleanup == _LEGACY_CLEANUP_MODEL_DEFAULT:
+                if settings.gemini_model_cleanup in _RETIRED_CLEANUP_MODELS:
                     settings.gemini_model_cleanup = DEFAULT_CLEANUP_MODEL
                 return settings
             except (json.JSONDecodeError, TypeError, AttributeError):

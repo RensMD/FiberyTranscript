@@ -58,6 +58,8 @@ def test_transcribe_controls_layout_is_inline_and_always_uses_context_improvemen
     styles_css = (PROJECT_ROOT / "ui" / "static" / "css" / "styles.css").read_text(encoding="utf-8")
 
     assert 'class="transcript-mode-controls"' in index_html
+    assert 'id="recordingModeMicOnly"' in index_html
+    assert 'id="recordingModeMicAndSpeakers"' in index_html
     assert "transcript-mode-controls" in styles_css
     assert "IMPROVE_TRANSCRIPT_WITH_CONTEXT = true" in app_js
     assert "advancedTranscriptCard" not in index_html
@@ -70,10 +72,26 @@ def test_transcribe_controls_layout_is_inline_and_always_uses_context_improvemen
     assert "removeEchoCheckbox" not in app_js
     assert 'id="echoCancellationEnabled"' in index_html
     assert "echoCancellationEnabled" in settings_js
+    assert "function getSelectedRecordingMode()" in app_js
+    assert "window.pywebview.api.set_recording_mode(value);" in app_js
 
+    recording_toggle_index = index_html.index('id="recordingModeMicOnly"')
     transcript_toggle_index = index_html.index('id="modeAppend"')
     transcribe_btn_index = index_html.index('id="transcribeBtn"')
+    assert recording_toggle_index < transcript_toggle_index
     assert transcript_toggle_index < transcribe_btn_index
+
+
+def test_summary_language_toggle_defaults_to_english_and_is_session_scoped():
+    index_html = (PROJECT_ROOT / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (PROJECT_ROOT / "ui" / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="summaryLanguageEnglish"' in index_html
+    assert 'id="summaryLanguageDutch"' in index_html
+    assert 'name="summaryLanguage" value="en" checked' in index_html
+    assert "function getSelectedSummaryLanguage()" in app_js
+    assert "window.pywebview.api.set_summary_language(value);" in app_js
+    assert "syncSummaryLanguageInputs('en');" in app_js
 
 
 def test_clear_button_is_available_for_staged_recordings_before_transcription():

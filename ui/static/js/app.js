@@ -356,6 +356,24 @@ function getSelectedTranscriptMode() {
     return selected ? selected.value : 'append';
 }
 
+function getSelectedRecordingMode() {
+    const selected = document.querySelector('input[name="recordingMode"]:checked');
+    return selected ? selected.value : 'mic_only';
+}
+
+function syncRecordingModeInputs(value) {
+    const normalized = value === 'mic_and_speakers' ? 'mic_and_speakers' : 'mic_only';
+    const radio = document.getElementById(
+        normalized === 'mic_and_speakers' ? 'recordingModeMicAndSpeakers' : 'recordingModeMicOnly'
+    );
+    if (radio) radio.checked = true;
+}
+
+function applyRecordingMode(value) {
+    syncRecordingModeInputs(value);
+    window.pywebview.api.set_recording_mode(value);
+}
+
 function syncTranscriptModeInputs(value) {
     const normalized = value === 'replace' ? 'replace' : 'append';
     const mainRadio = document.getElementById(normalized === 'append' ? 'modeAppend' : 'modeReplace');
@@ -365,6 +383,24 @@ function syncTranscriptModeInputs(value) {
 function applyTranscriptMode(value) {
     syncTranscriptModeInputs(value);
     window.pywebview.api.set_transcript_mode(value);
+}
+
+function getSelectedSummaryLanguage() {
+    const selected = document.querySelector('input[name="summaryLanguage"]:checked');
+    return selected ? selected.value : 'en';
+}
+
+function syncSummaryLanguageInputs(value) {
+    const normalized = value === 'nl' ? 'nl' : 'en';
+    const radio = document.getElementById(
+        normalized === 'nl' ? 'summaryLanguageDutch' : 'summaryLanguageEnglish'
+    );
+    if (radio) radio.checked = true;
+}
+
+function applySummaryLanguage(value) {
+    syncSummaryLanguageInputs(value);
+    window.pywebview.api.set_summary_language(value);
 }
 
 function setSelectedUploadUiVisible(visible) {
@@ -416,6 +452,7 @@ function applyPreparedAudio(info) {
     transcribePanelCollapsible.classList.remove('collapsed');
     sendPanelCollapsible.classList.remove('collapsed');
     setAudioSourceToolsHidden(true);
+    syncRecordingModeInputs(info.recording_mode_recommendation || 'mic_only');
     updateTranscribeButton();
     setStatus('completed');
     updateSummaryActionsState();
@@ -516,6 +553,7 @@ transcribeBtn.addEventListener('click', async () => {
             false,
             IMPROVE_TRANSCRIPT_WITH_CONTEXT,
             getSelectedTranscriptMode(),
+            getSelectedRecordingMode(),
         );
         if (!result.success) {
             showToast('Failed: ' + result.error, 'error');
@@ -525,6 +563,13 @@ transcribeBtn.addEventListener('click', async () => {
         }
         if (result.transcript_mode) {
             syncTranscriptModeInputs(result.transcript_mode);
+        }
+        if (result.effective_recording_mode) {
+            syncRecordingModeInputs(result.effective_recording_mode);
+        }
+        if (result.recording_mode_auto_corrected) {
+            const reason = result.recording_mode_reason ? ` ${result.recording_mode_reason}` : '';
+            showToast(`Using Mic only for this transcript.${reason}`, 'info', 7000);
         }
         clearUploadBtn.disabled = true;
         clearUploadBtn.classList.add('hidden');
@@ -1060,8 +1105,10 @@ async function resetSession() {
     const appendRadio = document.getElementById('modeAppend');
     if (appendRadio) appendRadio.checked = true;
     syncTranscriptModeInputs('append');
+    syncRecordingModeInputs('mic_only');
     const summaryAppendRadio = document.getElementById('summaryModeAppend');
     if (summaryAppendRadio) summaryAppendRadio.checked = true;
+    syncSummaryLanguageInputs('en');
 
     // Reset recording meta and button
     recordingMetaCollapsible.classList.add('collapsed');
@@ -1146,10 +1193,24 @@ document.querySelectorAll('input[name="transcriptMode"]').forEach(radio => {
     });
 });
 
+// --- Recording Mode Toggle ---
+document.querySelectorAll('input[name="recordingMode"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        applyRecordingMode(e.target.value);
+    });
+});
+
 // --- Summary Mode Toggle ---
 document.querySelectorAll('input[name="summaryMode"]').forEach(radio => {
     radio.addEventListener('change', (e) => {
         window.pywebview.api.set_summary_mode(e.target.value);
+    });
+});
+
+// --- Summary Language Toggle ---
+document.querySelectorAll('input[name="summaryLanguage"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        applySummaryLanguage(e.target.value);
     });
 });
 
@@ -1616,7 +1677,11 @@ summarizeBtn.addEventListener('click', async () => {
         const customPrompt = additionalPrompt.value.trim();
         const summaryStyle = getSummaryStyle();
         // Returns immediately — result arrives via onSummarizeComplete/onSummarizeError
-        await window.pywebview.api.generate_summary(customPrompt, summaryStyle);
+        await window.pywebview.api.generate_summary(
+            customPrompt,
+            summaryStyle,
+            getSelectedSummaryLanguage(),
+        );
     } catch (err) {
         summarizeInProgress = false;
         summarizeRetryPending = true;
@@ -1700,12 +1765,20 @@ retryBatchBtn.addEventListener('click', async () => {
     try {
         transcriptionInProgress = true;
         updateTranscribeButton('Retrying...');
-        await callApi(
+        const result = await callApi(
             'start_transcription',
             false,
             IMPROVE_TRANSCRIPT_WITH_CONTEXT,
             getSelectedTranscriptMode(),
+            getSelectedRecordingMode(),
         );
+        if (result.effective_recording_mode) {
+            syncRecordingModeInputs(result.effective_recording_mode);
+        }
+        if (result.recording_mode_auto_corrected) {
+            const reason = result.recording_mode_reason ? ` ${result.recording_mode_reason}` : '';
+            showToast(`Using Mic only for this transcript.${reason}`, 'info', 7000);
+        }
         _lastFailedWavPath = '';
     } catch (err) {
         transcriptionInProgress = false;

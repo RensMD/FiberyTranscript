@@ -1,7 +1,7 @@
 """Application constants and prompt templates."""
 
 APP_NAME = "Fibery Transcript"
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 APP_WINDOW_TITLE = "FiberyTranscript"
 APP_AUTOSTART_REG_VALUE = "FiberyTranscript"
 APP_LEGACY_AUTOSTART_REG_VALUES = ("Fibery Transcript",)
@@ -84,9 +84,16 @@ The provided notes are written on the fly by meeting participants and may be inc
 
 # Transcript cleanup prompt (used by Gemini to clean up raw AssemblyAI output)
 TRANSCRIPT_CLEANUP_PROMPT = """You are a transcript checker. Your task is to clean up \
-an auto-generated meeting transcript. Remove filler words. Use the meeting context to resolve name ambiguities \
-and fix obvious transcription errors. Instructions:
-- Keep the original language. Do NOT translate.
+an auto-generated meeting transcript without turning it into a summary. Use the meeting context to resolve name \
+ambiguities and fix obvious transcription errors. Instructions:
+- The detected transcript language is {language}. Keep the entire output in {language}. Never translate, localize, \
+or rewrite it into another language.
+- This is transcript cleanup, not summarization. Do not summarize, condense, paraphrase, reorder, or rewrite the \
+meeting into a shorter narrative.
+- Preserve full content coverage. Keep every substantive statement, question, answer, decision, example, and action \
+item from the source transcript.
+- Keep the original turn order. Unless you are removing a clear duplicate echo, every input speaker turn should \
+still be represented in the output.
 - Only replace a generic speaker label with a real name when the identity is directly supported by \
 meeting-specific evidence such as the confirmed participant list, meeting notes, the transcript itself, \
 or the attached audio.
@@ -100,12 +107,14 @@ and the rest is new), remove the duplicated portion and keep the unique remainde
 - If the duplicate appears on two channels and the later/source copy is on Channel 1 while the earlier duplicate \
 is on Channel 0, prefer keeping Channel 1 and removing the duplicate Channel 0 text.
 - Format speaker label as **Name:** on its own line, followed by the text.
-- Fix obvious transcription errors: broken sentences, misheard words, grammar issues.
-- No Yeah, Uh, Um, Like, You know, or lonely "and" or similar filler words. Remove them entirely.
-- Preserve the original meaning do not add, remove, or change what was said.
-- Split the transcript into a few broad thematic sections with short bold headers only.
-- No em-dashes.
-- DO NOT TRANSLATE DUTCH"""
+- Fix obvious transcription errors: broken sentences, misheard words, grammar issues, punctuation, and capitalization.
+- Remove only standalone filler words or short verbal tics such as Yeah, Uh, Um, Like, You know, or a lonely \
+"and" when they add no meaning. Do not remove meaningful phrases, partial sentences, or hedging that carries content.
+- If you are unsure whether text is filler or meaningful, keep it.
+- Preserve the original meaning and level of detail; do not add, remove, or change what was said beyond the cleanup \
+rules above.
+- Do not add section summaries. Output a full cleaned transcript only.
+- No em-dashes."""
 
 # Audio-assisted variant: appended when the recording audio is also provided
 TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM = """
@@ -114,5 +123,6 @@ The original meeting audio is attached. Do NOT re-transcribe from scratch; impro
 especially names, technical terms, and non-English words.
 - Resolve speaker identification where the text alone is ambiguous. Listen for \
 voice differences to confirm who is speaking. 
-- DO NOT TRANSLATE
+- Keep full transcript coverage. Use the audio to confirm and correct the existing transcript, not to shorten it.
+- Keep the transcript in its detected source language. Never translate.
 """

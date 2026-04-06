@@ -160,6 +160,18 @@ class ApiBridge:
         """Get current transcript mode."""
         return {"success": True, "mode": self._app._transcript_mode}
 
+    def set_recording_mode(self, mode: str) -> dict:
+        """Set recording mode for the current staged audio."""
+        if mode not in ("mic_only", "mic_and_speakers"):
+            return {"success": False, "error": "Invalid mode"}
+        self._app._recording_mode = mode
+        logger.info("Recording mode set to: %s", mode)
+        return {"success": True}
+
+    def get_recording_mode(self) -> dict:
+        """Get current recording mode."""
+        return {"success": True, "mode": self._app._recording_mode}
+
     def set_summary_mode(self, mode: str) -> dict:
         """Set summary mode to 'append' or 'replace' for this meeting."""
         if mode not in ("append", "replace"):
@@ -171,6 +183,18 @@ class ApiBridge:
     def get_summary_mode(self) -> dict:
         """Get current summary mode."""
         return {"success": True, "mode": self._app._summary_mode}
+
+    def set_summary_language(self, language: str) -> dict:
+        """Set summary output language for this meeting."""
+        if language not in ("en", "nl"):
+            return {"success": False, "error": "Invalid language"}
+        self._app._summary_language = language
+        logger.info("Summary language set to: %s", language)
+        return {"success": True}
+
+    def get_summary_language(self) -> dict:
+        """Get current summary output language."""
+        return {"success": True, "language": self._app._summary_language}
 
     # --- File Upload (Browse & Transcribe) ---
 
@@ -236,6 +260,7 @@ class ApiBridge:
         remove_echo: bool = False,
         improve_with_context: bool = True,
         transcript_mode: str = "append",
+        recording_mode: str = "mic_only",
     ) -> dict:
         """Start transcription for the currently staged audio file."""
         try:
@@ -245,6 +270,7 @@ class ApiBridge:
                 remove_echo=bool(remove_echo),
                 improve_with_context=bool(improve_with_context),
                 transcript_mode=transcript_mode,
+                recording_mode=recording_mode,
             ))
             return result
         except Exception as e:
@@ -486,6 +512,7 @@ class ApiBridge:
         self,
         custom_prompt: str = "",
         summary_style: str = "normal",
+        summary_language: str = "en",
     ) -> dict:
         """Generate AI summary from transcript (runs in background). Result via onSummarizeComplete/onSummarizeError."""
         def _background():
@@ -494,6 +521,7 @@ class ApiBridge:
                 result = self._app.generate_summary(
                     custom_prompt=custom_prompt,
                     summary_style=summary_style,
+                    summary_language=summary_language,
                 )
                 if result.get("success"):
                     self._app._notify_js(
@@ -517,6 +545,7 @@ class ApiBridge:
         fibery_url: str,
         custom_prompt: str = "",
         summary_style: str = "normal",
+        summary_language: str = "en",
     ) -> dict:
         """Summarize transcript with Gemini and update AI Summary in Fibery (runs in background)."""
         def _background():
@@ -526,6 +555,7 @@ class ApiBridge:
                     fibery_url,
                     custom_prompt=custom_prompt,
                     summary_style=summary_style,
+                    summary_language=summary_language,
                 )
                 if result.get("success"):
                     self._app._notify_js("window.onSummarizeComplete({})")

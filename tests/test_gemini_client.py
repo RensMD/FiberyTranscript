@@ -160,6 +160,24 @@ def test_summarize_transcript_short_interview_style_adds_tighter_length_limits(m
     assert "at most 2 problem definition suggestions" in system_instruction
 
 
+def test_summarize_transcript_uses_requested_output_language(monkeypatch):
+    fake_google = _install_fake_google(monkeypatch, ["Nederlandse samenvatting"])
+
+    summary = gemini_client.summarize_transcript(
+        api_key="test-key",
+        transcript="Speaker A: hello",
+        notes="",
+        is_interview=False,
+        summary_language="nl",
+    )
+
+    assert summary == "Nederlandse samenvatting"
+    client = fake_google.Client.instances[0]
+    system_instruction = client.calls[0]["config"].kwargs["system_instruction"]
+    assert "Output language: Dutch." in system_instruction
+    assert "Write the entire summary in Dutch." in system_instruction
+
+
 def test_cleanup_transcript_falls_back_on_deadline_exceeded(monkeypatch):
     fake_google = _install_fake_google(
         monkeypatch,
@@ -180,7 +198,7 @@ def test_cleanup_transcript_falls_back_on_deadline_exceeded(monkeypatch):
     assert client.http_options == {"timeout": gemini_client._CLEANUP_REQUEST_TIMEOUT_MS}
     assert [call["model"] for call in client.calls] == [
         "gemini-cleanup",
-        "gemini-2.5-flash-lite",
+        "gemini-3.1-pro-preview",
     ]
 
 
@@ -248,11 +266,117 @@ def test_cleanup_transcript_treats_company_context_as_glossary_not_attendance(mo
     client = fake_google.Client.instances[0]
     call = client.calls[0]
     system_instruction = call["config"].kwargs["system_instruction"]
+    assert "The detected transcript language is English." in system_instruction
+    assert "Keep the entire output in English." in system_instruction
     assert "Only replace a generic speaker label with a real name" in system_instruction
     assert "Never assign a speaker name based only on general company context" in system_instruction
     assert "keep the source version and remove the echoed duplicate" in system_instruction
     assert "remove the duplicated portion and keep the unique remainder" in system_instruction
     assert "prefer keeping Channel 1 and removing the duplicate Channel 0 text" in system_instruction
+    assert "Do not summarize, condense, paraphrase" in system_instruction
+    assert "Keep every substantive statement" in system_instruction
+    assert "Do not add section summaries" in system_instruction
     assert "Confirmed meeting-specific context:" in system_instruction
     assert "General company context (glossary only; not evidence that a person attended this meeting):" in system_instruction
     assert "Participants likely include Rens and Andrej." in call["contents"]
+
+
+def test_cleanup_output_is_suspiciously_short_only_for_long_major_reductions():
+    long_source = " ".join(["word"] * 700)
+    deduped = " ".join(["word"] * 320)
+    summarized = " ".join(["word"] * 180)
+    short_source = " ".join(["word"] * 60)
+
+    assert not gemini_client._cleanup_output_is_suspiciously_short(long_source, deduped)
+    assert gemini_client._cleanup_output_is_suspiciously_short(long_source, summarized)
+    assert not gemini_client._cleanup_output_is_suspiciously_short(short_source, "short summary")
+
+
+def test_cleanup_transcript_uses_raw_when_all_models_overcompress(monkeypatch):
+    fake_google = _install_fake_google(
+        monkeypatch,
+        [
+            "short summary",
+            "still too short",
+        ],
+    )
+
+    transcript = " ".join(["full"] * 700)
+    cleaned = gemini_client.cleanup_transcript(
+        api_key="test-key",
+        transcript=transcript,
+        model="gemini-cleanup",
+    )
+
+    assert cleaned == transcript
+    client = fake_google.Client.instances[0]
+    assert [call["model"] for call in client.calls] == [
+        "gemini-cleanup",
+        "gemini-3.1-pro-preview",
+    ]
+
+
+def test_split_transcript_for_cleanup_preserves_speaker_blocks():
+    transcript = (
+        "**Speaker 0**\nHello there.\n\n"
+        "**Speaker 1**\nHi.\n\n"
+        "**Speaker 0**\nLet's continue.\n\n"
+        "**Speaker 1**\nSounds good."
+    )
+
+    chunks = gemini_client._split_transcript_for_cleanup(transcript, max_chars=60, max_blocks=2)
+
+    assert chunks == [
+        "**Speaker 0**\nHello there.\n\n**Speaker 1**\nHi.",
+        "**Speaker 0**\nLet's continue.\n\n**Speaker 1**\nSounds good.",
+    ]
+
+
+def test_cleanup_transcript_splits_long_transcripts_into_multiple_requests(monkeypatch):
+    fake_google = _install_fake_google(
+        monkeypatch,
+        [
+            "cleaned chunk one",
+            "cleaned chunk two",
+        ],
+    )
+    monkeypatch.setattr(gemini_client, "_CLEANUP_MAX_CHARS_PER_REQUEST", 60)
+    monkeypatch.setattr(gemini_client, "_CLEANUP_MAX_BLOCKS_PER_REQUEST", 2)
+
+    transcript = (
+        "**Speaker 0**\nHello there.\n\n"
+        "**Speaker 1**\nHi.\n\n"
+        "**Speaker 0**\nLet's continue.\n\n"
+        "**Speaker 1**\nSounds good."
+    )
+
+    cleaned = gemini_client.cleanup_transcript(
+        api_key="test-key",
+        transcript=transcript,
+        notes="Meeting context note.",
+        model="gemini-cleanup",
+    )
+
+    assert cleaned == "cleaned chunk one\n\ncleaned chunk two"
+    client = fake_google.Client.instances[0]
+    assert len(client.calls) == 2
+    assert "Transcript chunk 1 of 2" in client.calls[0]["contents"]
+    assert "Transcript chunk 2 of 2" in client.calls[1]["contents"]
+
+
+def test_cleanup_transcript_uses_detected_language_without_translation(monkeypatch):
+    fake_google = _install_fake_google(monkeypatch, ["Schoongemaakte transcriptie"])
+
+    cleaned = gemini_client.cleanup_transcript(
+        api_key="test-key",
+        transcript="**Spreker 0**\nHallo daar",
+        language="nl",
+        model="gemini-cleanup",
+    )
+
+    assert cleaned == "Schoongemaakte transcriptie"
+    client = fake_google.Client.instances[0]
+    system_instruction = client.calls[0]["config"].kwargs["system_instruction"]
+    assert "The detected transcript language is Dutch." in system_instruction
+    assert "Keep the entire output in Dutch." in system_instruction
+    assert "Never translate" in system_instruction
