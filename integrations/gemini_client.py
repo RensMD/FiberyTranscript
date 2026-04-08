@@ -33,10 +33,9 @@ _CLEANUP_MAX_BLOCKS_PER_REQUEST = 80
 SUMMARY_STYLE_INSTRUCTIONS = {
     "normal": " ",
     "short": (
-        "Use a genuinely short summary. Keep it under about 900 characters unless a critical detail "
-        "would otherwise be lost. Omit routine background, filler, repetition, and long examples."
+        "Use a genuinely short summary. Keep it under about 900 characters unless a critical detail would otherwise be lost. Omit routine background, filler, repetition, and long examples."
     ),
-    "minimal": "Use minimal output: 3-5 short bullets with only critical outcomes.",
+    "minimal": "Use minimal output: 3-5 short sentences/bullets with only critical info.",
 }
 
 

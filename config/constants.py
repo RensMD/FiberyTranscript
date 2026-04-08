@@ -61,11 +61,11 @@ misheard words, grammar errors, and mistakes with names; use the meeting context
 The provided notes are written on the fly by meeting participants and may be incomplete, unstructured, or contain errors."""
 
 
-# Default meeting prompt (overwritten when user provides a custom prompt)
+# Default meeting prompt (used when "Summary" prompt type is selected)
 DEFAULT_MEETING_PROMPT = """You are a professional meeting summarizer.\
     Keep the summary clear, professional, and on topic."""
 
-# Interview prompt (switched to when interview mode is selected)
+# Interview prompt (used when "interview" prompt is selected)
 DEFAULT_INTERVIEW_PROMPT = """You are a professional interview summarizer. Your task is to analyze the \
 provided user notes and generated transcript to create a summary. \
 Keep the summary clear, professional, and focused on the following topics: \
@@ -83,9 +83,9 @@ definition per problem, no mixing of problems.) Follow this template exactly:
 **The downside is:** [Complaints]
 **They are searching for alternatives by:** [Search approach]"""
 
-# Shareable summary prompt (professional external-facing summary)
+# Shareable summary prompt (used when "shareable" prompt is selected)
 DEFAULT_SHAREABLE_PROMPT = """You are a professional meeting summarizer creating a summary to share with \
-external meeting participants. Focus on key outcomes, decisions, action items with owners, and next steps. \
+the external meeting participants. Focus on key outcomes, decisions, action items with owners, and next steps. \
 Keep it concise and professional. Avoid internal jargon, confidential strategic context, and anything not \
 appropriate for external sharing. Start with a brief meeting overview, then list decisions and action items."""
 
@@ -140,11 +140,10 @@ rules above.
 
 # Audio-assisted variant: appended when the recording audio is also provided
 TRANSCRIPT_CLEANUP_AUDIO_ADDENDUM = """
-The original meeting audio is attached. Do NOT re-transcribe from scratch; improve the provided transcript only. Use it to:
+The original meeting audio is attached. Do NOT re-transcribe from scratch; improve the provided transcript only with the provided audio. Use it to:
 - Verify and correct words that the automatic transcription may have misheard, \
 especially names, technical terms, and non-English words.
-- Resolve speaker identification where the text alone is ambiguous. Listen for \
-voice differences to confirm who is speaking. 
+- Resolve speaker identification where the text alone is ambiguous.
 - Keep full transcript coverage. Use the audio to confirm and correct the existing transcript, not to shorten it.
 - Keep the transcript in its detected source language. Never translate.
 """
