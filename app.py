@@ -3,6 +3,7 @@
 import getpass
 import json
 import logging
+import queue
 import sys
 import threading
 import time
@@ -108,6 +109,11 @@ class FiberyTranscriptApp:
         self._last_level_push: float = 0.0
         self._LEVEL_PUSH_INTERVAL: float = 0.2  # seconds between JS level pushes
 
+        # Queue to decouple PortAudio/loopback callbacks from JS dispatch and health processing.
+        # Audio callbacks put_nowait() here; _level_dispatch_loop drains on a background thread.
+        self._level_queue: queue.Queue = queue.Queue(maxsize=100)
+        self._is_shutting_down = False  # must be set before dispatch thread starts
+
         # Device scanning
         self._scan_thread: Optional[threading.Thread] = None
         self._scan_stop_event = threading.Event()
@@ -118,7 +124,6 @@ class FiberyTranscriptApp:
         # Periodic idle rescans are disabled in favor of explicit one-shot
         # auto-detect runs from the UI (startup, meeting selection, manual refresh).
         self._background_scanning_enabled: bool = False
-        self._is_shutting_down = False
         self._tray_quit_requested = False
         self._batch_thread: Optional[threading.Thread] = None
 
@@ -170,6 +175,12 @@ class FiberyTranscriptApp:
         # can detect that their session is stale and stop firing UI callbacks.
         self._session_token: int = 0
         self._prepared_audio_info: Optional[dict] = None
+
+        # Start level dispatch thread last — it reads fields initialized above.
+        self._level_dispatch_thread = threading.Thread(
+            target=self._level_dispatch_loop, daemon=True, name="level-dispatch"
+        )
+        self._level_dispatch_thread.start()
 
     @property
     def needs_close_confirmation(self) -> bool:
@@ -1487,7 +1498,30 @@ class FiberyTranscriptApp:
             self._recorder.write_chunk(mixed_pcm)
 
     def _on_level_update(self, mic_level: float, sys_level: float, raw_mic_level: float = -1) -> None:
-        """Called by audio capture with RMS levels."""
+        """Called by audio capture with RMS levels. Non-blocking — safe from PortAudio callbacks.
+
+        Puts the update into _level_queue; _level_dispatch_loop processes it on a background thread,
+        keeping JS calls, health monitoring, and silence detection off the PortAudio callback thread.
+        """
+        try:
+            self._level_queue.put_nowait((mic_level, sys_level, raw_mic_level))
+        except queue.Full:
+            pass  # drop rather than block the audio thread
+
+    def _level_dispatch_loop(self) -> None:
+        """Background thread: drain _level_queue and call _process_level_update."""
+        while not self._is_shutting_down:
+            try:
+                mic_level, sys_level, raw_mic_level = self._level_queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            try:
+                self._process_level_update(mic_level, sys_level, raw_mic_level)
+            except Exception:
+                logger.debug("Level dispatch error", exc_info=True)
+
+    def _process_level_update(self, mic_level: float, sys_level: float, raw_mic_level: float = -1) -> None:
+        """Process a level update: push to JS, run health monitor, check silence."""
         if mic_level >= 0:
             self._last_mic_level = mic_level
         if raw_mic_level >= 0:
@@ -1515,16 +1549,26 @@ class FiberyTranscriptApp:
                 )
                 for warning in self._health_monitor.check_warnings(health):
                     if warning.startswith("BOTH_DEAD:"):
-                        # Both channels dead → auto-stop recording
+                        # Both channels dead → auto-stop on a separate thread.
+                        # stop_recording() calls stop_capture() → mic_stream.stop(), which
+                        # deadlocks if called from the PortAudio callback or the loopback
+                        # thread (can't stop a stream from within its own callback, and
+                        # Thread.join() on the current thread raises RuntimeError).
                         msg = warning[len("BOTH_DEAD:"):]
                         self._notify_js(f"window.onHealthWarning && window.onHealthWarning({json.dumps(msg)})")
                         logger.warning("Both audio channels dead, triggering auto-stop")
-                        info = self.stop_recording()
-                        self._notify_audio_prepared(info)
+                        threading.Thread(target=self._auto_stop_both_dead, daemon=True).start()
                         return
                     self._notify_js(f"window.onHealthWarning && window.onHealthWarning({json.dumps(warning)})")
 
         self._check_recording_silence()
+
+    def _auto_stop_both_dead(self) -> None:
+        """Stop recording when both audio channels die. Runs on a dedicated thread so that
+        stop_capture() (which joins the loopback thread and stops the mic stream) is never
+        called from within a PortAudio callback or the loopback thread itself."""
+        info = self.stop_recording()
+        self._notify_audio_prepared(info)
 
     # --- Silence Auto-Stop ---
 

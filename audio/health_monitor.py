@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Thresholds — class constants, easy to tune
 DEAD_CHANNEL_THRESHOLD = 0.001   # RMS below this = "silent"
-DEAD_CHANNEL_DURATION = 15.0     # seconds before marking dead
+DEAD_CHANNEL_DURATION = 30.0     # seconds before marking dead
 CLIPPING_THRESHOLD = 0.95        # RMS above this = clipping
 CLIPPING_DURATION = 0.5          # seconds before warning
 SPEECH_THRESHOLD = 0.02          # RMS above this = likely speech
