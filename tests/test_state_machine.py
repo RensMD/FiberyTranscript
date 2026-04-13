@@ -33,6 +33,34 @@ def _make_test_root(name: str) -> Path:
     return root
 
 
+def _make_pending_session(*, wav_path: str = "meeting.wav") -> RecordingSession:
+    session = RecordingSession(SessionContext(wav_path=wav_path))
+    session.results.set_batch_result({
+        "utterances": [{"speaker": "A", "text": "Pending transcript", "start": 0, "end": 1}]
+    })
+    session.results.set_cleaned_transcript("Pending transcript")
+    session.results.set_generated_summary("Pending summary")
+    return session
+
+
+def _thread_spy(spawned: list, *, auto_run: bool = False):
+    class _ThreadSpy:
+        def __init__(self, *, target, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+            self.daemon = daemon
+            self.started = False
+            spawned.append(self)
+
+        def start(self):
+            self.started = True
+            if auto_run:
+                self._target(*self._args, **self._kwargs)
+
+    return _ThreadSpy
+
+
 class _FakeAudioSegment:
     def __init__(self, duration_ms: int, frame_rate: int, channels: int):
         self._duration_ms = duration_ms
@@ -329,6 +357,111 @@ class TestMeetingMetadata:
         assert result["has_transcript"] is False
         assert result["transcript_text"] == ""
         assert app._linked_transcript_text == ""
+
+    def test_validate_fibery_url_retargets_pending_auto_flush_within_same_session(self, monkeypatch):
+        app = _make_app(Settings(display_name="Test", audio_storage="fibery"))
+        app._session = _make_pending_session()
+        spawned = []
+        entity_a = SimpleNamespace(space="General", database="Internal Meeting", entity_name="A", uuid="entity-a")
+        entity_b = SimpleNamespace(space="General", database="Internal Meeting", entity_name="B", uuid="entity-b")
+        client = MagicMock()
+        client.extract_url_candidates.side_effect = [["https://example.fibery.io/a"], ["https://example.fibery.io/b"]]
+        client.parse_url.side_effect = [entity_a, entity_b]
+        client.get_entity_uuid.side_effect = ["entity-a", "entity-b"]
+        client.get_entity_name.side_effect = ["Meeting A", "Meeting B"]
+        client.get_entity_transcript.return_value = ""
+
+        monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+        with patch("app.get_key", return_value="fibery-key"):
+            with patch("integrations.fibery_client.FiberyClient", return_value=client):
+                assert app.validate_fibery_url("https://example.fibery.io/a")["success"] is True
+                assert app.validate_fibery_url("https://example.fibery.io/b")["success"] is True
+
+        assert len(spawned) == 6
+        transcript_thread, audio_thread, summary_thread = spawned[-3:]
+        assert transcript_thread._target == app._auto_send_transcript
+        assert transcript_thread._args == (entity_b, client, app._session, app._session_token)
+        assert audio_thread._target == app._upload_audio_to_fibery
+        assert audio_thread._args[0] == app._session.context.wav_path
+        assert audio_thread._args[1].context.entity is entity_b
+        assert audio_thread._args[1].results is app._session.results
+        assert audio_thread._args[2] == app._session_token
+        assert summary_thread._target == app._auto_send_pending_summary
+        assert summary_thread._args == (entity_b, client, app._session, app._session_token)
+
+    def test_validate_fibery_url_does_not_auto_flush_after_reset_session(self, monkeypatch):
+        app = _make_app(Settings(display_name="Test", audio_storage="fibery"))
+        app._session = _make_pending_session()
+        app.release_recording_lock = MagicMock()
+        app.reset_session()
+
+        spawned = []
+        entity = SimpleNamespace(space="General", database="Internal Meeting", entity_name="B", uuid="entity-b")
+        client = MagicMock()
+        client.extract_url_candidates.return_value = ["https://example.fibery.io/b"]
+        client.parse_url.return_value = entity
+        client.get_entity_uuid.return_value = "entity-b"
+        client.get_entity_name.return_value = "Meeting B"
+        client.get_entity_transcript.return_value = ""
+
+        monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+        with patch("app.get_key", return_value="fibery-key"):
+            with patch("integrations.fibery_client.FiberyClient", return_value=client):
+                result = app.validate_fibery_url("https://example.fibery.io/b")
+
+        assert result["success"] is True
+        assert spawned == []
+
+
+class TestSessionBoundaryWorkers:
+    def test_stale_transcript_auto_send_skips_fibery_write(self):
+        app = _make_app()
+        app.release_recording_lock = MagicMock()
+        session = _make_pending_session()
+        entity = SimpleNamespace(space="General", database="Internal Meeting")
+        client = MagicMock()
+
+        app.reset_session()
+        stale_token = app._session_token - 1
+        app._auto_send_transcript(entity, client, session, stale_token)
+
+        client.update_transcript_only.assert_not_called()
+        assert session.results.get_transcript_sent() is False
+
+    def test_stale_audio_upload_skips_fibery_write(self):
+        app = _make_app()
+        app.release_recording_lock = MagicMock()
+        session = RecordingSession(SessionContext(
+            entity=SimpleNamespace(space="General", database="Internal Meeting"),
+            fibery_client=MagicMock(),
+            wav_path="meeting.wav",
+        ))
+        session.context.fibery_client.entity_supports_files.return_value = True
+
+        app.reset_session()
+        stale_token = app._session_token - 1
+        result = app._upload_audio_to_fibery(session.context.wav_path, session, stale_token)
+
+        assert result is False
+        session.context.fibery_client.upload_file.assert_not_called()
+        session.context.fibery_client.attach_file_to_entity.assert_not_called()
+        assert session.results.get_audio_uploaded() is False
+
+    def test_stale_pending_summary_auto_send_skips_fibery_write(self):
+        app = _make_app()
+        app.release_recording_lock = MagicMock()
+        session = _make_pending_session()
+        entity = SimpleNamespace(space="General", database="Internal Meeting")
+        client = MagicMock()
+
+        app.reset_session()
+        stale_token = app._session_token - 1
+        app._auto_send_pending_summary(entity, client, session, stale_token)
+
+        client.update_summary_only.assert_not_called()
+        assert session.results.get_summary_sent() is False
 
 
 class TestUploadedFileStaging:

@@ -2317,6 +2317,9 @@ class FiberyTranscriptApp:
 
         if not entity or not client:
             return False
+        if _stale():
+            logger.info("Audio upload skipped for stale session token")
+            return False
         if not client.entity_supports_files(entity):
             logger.info(
                 "Entity type %s does not support file attachments, skipping",
@@ -2324,16 +2327,28 @@ class FiberyTranscriptApp:
             )
             return False
         results = session.results if session else None
+        started_upload = False
         if results and not results.try_start_audio_upload():
             logger.info("Audio upload already in-flight, skipping")
             return False
+        started_upload = bool(results)
         try:
+            if _stale():
+                if started_upload:
+                    results.finish_audio_upload(success=False)
+                logger.info("Audio upload aborted after session reset")
+                return False
             if not _stale():
                 self._notify_js(
                     'window.onProcessingProgress("Uploading audio to Fibery...")'
                 )
             file_path = Path(wav_path)
             file_meta = client.upload_file(file_path)
+            if _stale():
+                if started_upload:
+                    results.finish_audio_upload(success=False)
+                logger.info("Audio attach skipped after session reset")
+                return False
             file_id = file_meta["fibery/id"]
             client.attach_file_to_entity(entity, file_id)
             if results:
@@ -2449,12 +2464,28 @@ class FiberyTranscriptApp:
             except OSError as e:
                 logger.warning("Could not delete %s: %s", candidate.name, e)
 
-    def _auto_send_pending_summary(self) -> None:
+    def _auto_send_pending_summary(
+        self,
+        entity,
+        fibery_client,
+        session: "RecordingSession" = None,
+        session_token: int = None,
+    ) -> None:
         """Send a cached generated summary to Fibery (background thread)."""
-        result = self.send_pending_summary_to_fibery()
+        def _stale():
+            return session_token is not None and self._session_token != session_token
+
+        result = self._send_pending_summary_to_target(
+            entity,
+            fibery_client,
+            session=session,
+            session_token=session_token,
+        )
+        if _stale():
+            return
         if result.get("success"):
             self._notify_js("window.onPendingSummarySent()")
-        else:
+        elif not result.get("stale"):
             self._notify_js(
                 f"window.onPendingSummarySendError({json.dumps(result.get('error', 'Unknown error'))})"
             )
@@ -2541,6 +2572,7 @@ class FiberyTranscriptApp:
             return session_token is not None and self._session_token != session_token
 
         results = session.results if session else None
+        started_send = False
 
         if results:
             batch = results.get_batch_result()
@@ -2558,11 +2590,20 @@ class FiberyTranscriptApp:
                                 or format_diarized_transcript(batch["utterances"]))
             results = self._session.results
 
+        if _stale():
+            logger.info("Transcript auto-send skipped for stale session token")
+            return
         if results and not results.try_start_transcript_send():
             logger.info("Transcript send already in-flight, skipping")
             return
+        started_send = bool(results)
 
         try:
+            if _stale():
+                if started_send:
+                    results.finish_transcript_send(success=False)
+                logger.info("Transcript auto-send aborted after session reset")
+                return
             effective_append = not force_replace and self._transcript_mode == "append"
             if effective_append:
                 fibery_client.update_transcript_only(entity, transcript_text, append=True)
@@ -2751,40 +2792,48 @@ class FiberyTranscriptApp:
                 except Exception as exc:
                     logger.warning("Failed to fetch linked notes: %s", exc)
 
+            session = self._session
+            session_results = session.results if session else None
+            session_token = self._session_token
+
             # If transcript is already available (entity linked after recording), auto-send now
-            session_batch = self._session.results.get_batch_result() if self._session else None
+            session_batch = session_results.get_batch_result() if session_results else None
             if session_batch and session_batch.get("utterances"):
                 threading.Thread(
                     target=self._auto_send_transcript,
-                    args=(entity, client, self._session),
+                    args=(entity, client, session, session_token),
                     daemon=True,
                 ).start()
 
             # If audio storage is Fibery and we have a recording, upload it now.
             # Build a proxy session with the NEW entity so audio lands on the
             # same target as the transcript (unified post-hoc routing).
-            if self.settings.audio_storage == "fibery" and self._session and self._session.context.wav_path:
+            if self.settings.audio_storage == "fibery" and session and session.context.wav_path:
                 upload_session = RecordingSession(SessionContext(
                     entity=entity,
                     fibery_client=client,
                     entity_context=self._entity_context,
-                    wav_path=self._session.context.wav_path,
-                    compressed_path=self._session.context.compressed_path,
-                    is_uploaded_file=self._session.context.is_uploaded_file,
+                    wav_path=session.context.wav_path,
+                    compressed_path=session.context.compressed_path,
+                    is_uploaded_file=session.context.is_uploaded_file,
                 ))
-                upload_session.results = self._session.results
+                upload_session.results = session_results
                 threading.Thread(
                     target=self._upload_audio_to_fibery,
-                    args=(self._session.context.wav_path, upload_session),
+                    args=(session.context.wav_path, upload_session, session_token),
                     daemon=True,
                 ).start()
 
             # If a summary was already generated without a link, send it now
             pending_summary = bool(
-                self._session.results.get_generated_summary() if self._session else None
+                session_results.get_generated_summary() if session_results else None
             )
             if pending_summary:
-                threading.Thread(target=self._auto_send_pending_summary, daemon=True).start()
+                threading.Thread(
+                    target=self._auto_send_pending_summary,
+                    args=(entity, client, session, session_token),
+                    daemon=True,
+                ).start()
 
             result = {
                 "success": True,
@@ -2893,22 +2942,37 @@ class FiberyTranscriptApp:
             logger.error("Summary generation failed: %s", e)
             return {"success": False, "error": _friendly_error(e)}
 
-    def send_pending_summary_to_fibery(self) -> dict:
-        """Send a previously generated summary to the validated Fibery entity."""
-        # Capture locally to prevent TOCTOU
-        session = self._session
+    def _send_pending_summary_to_target(
+        self,
+        entity,
+        client,
+        session: "RecordingSession" = None,
+        session_token: int = None,
+    ) -> dict:
+        """Send a cached generated summary to a specific Fibery target."""
+        def _stale():
+            return session_token is not None and self._session_token != session_token
+
         session_results = session.results if session else None
-        entity = self._validated_entity
-        client = self._fibery_client
         summary = session_results.get_generated_summary() if session_results else None
         if not summary:
             return {"success": False, "error": "No summary available"}
         if not entity or not client:
             return {"success": False, "error": "No Fibery entity validated"}
+        if _stale():
+            logger.info("Pending summary send skipped for stale session token")
+            return {"success": False, "stale": True, "error": "Session reset"}
+        started_send = False
         if session_results and not session_results.try_start_summary_send():
             logger.info("Summary send already in-flight, skipping")
             return {"success": False, "error": "Summary send already in progress"}
+        started_send = bool(session_results)
         try:
+            if _stale():
+                if started_send:
+                    session_results.finish_summary_send(success=False)
+                logger.info("Pending summary send aborted after session reset")
+                return {"success": False, "stale": True, "error": "Session reset"}
             client.update_summary_only(entity, ai_summary=summary, append=(self._summary_mode == "append"))
             if session_results:
                 session_results.finish_summary_send(success=True)
@@ -2919,6 +2983,14 @@ class FiberyTranscriptApp:
                 session_results.finish_summary_send(success=False)
             logger.error("Failed to send pending summary to Fibery: %s", e)
             return {"success": False, "error": _friendly_error(e)}
+
+    def send_pending_summary_to_fibery(self) -> dict:
+        """Send a previously generated summary to the validated Fibery entity."""
+        # Capture locally to prevent TOCTOU
+        session = self._session
+        entity = self._validated_entity
+        client = self._fibery_client
+        return self._send_pending_summary_to_target(entity, client, session=session)
 
     def send_summary_to_fibery(
         self,
