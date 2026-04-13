@@ -10,6 +10,16 @@ from config.settings import Settings
 from transcription import batch
 
 
+class _FakeAudioSegment:
+    def __init__(self, duration_ms: int, frame_rate: int, channels: int):
+        self._duration_ms = duration_ms
+        self.frame_rate = frame_rate
+        self.channels = channels
+
+    def __len__(self):
+        return self._duration_ms
+
+
 def _make_app(settings: Settings | None = None):
     from app import FiberyTranscriptApp
 
@@ -118,6 +128,41 @@ def test_transcribe_uses_precompressed_audio_when_post_processing_is_off():
         assert calls["config"]["speech_models"] == ["universal-3-pro", "universal-2"]
         assert calls["config"]["language_detection"] is True
         assert result["audio_path"] == str(ogg_path)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_transcribe_accepts_m4a_upload_when_soundfile_cannot_read():
+    root = _make_test_root("test_post_processing_accepts_m4a")
+    try:
+        m4a_path = root / "meeting.m4a"
+        m4a_path.write_bytes(b"m4a" * 2048)
+        calls = {}
+
+        fake_soundfile = types.SimpleNamespace(
+            info=lambda _path: (_ for _ in ()).throw(RuntimeError("unsupported")),
+        )
+
+        with patch.dict(sys.modules, {
+            "assemblyai": _fake_assemblyai(calls),
+            "soundfile": fake_soundfile,
+        }, clear=False):
+            with patch(
+                "transcription.batch.load_audio_segment",
+                return_value=_FakeAudioSegment(duration_ms=3200, frame_rate=44100, channels=1),
+            ) as load_mock:
+                with patch.object(batch, "_compress_audio", side_effect=AssertionError("unexpected compression")):
+                    result = batch.transcribe_with_diarization(
+                        api_key="test-key",
+                        audio_path=str(m4a_path),
+                        compressed_path=str(m4a_path),
+                        post_process=False,
+                    )
+
+        load_mock.assert_called_once_with(str(m4a_path))
+        assert calls["upload_path"] == str(m4a_path)
+        assert "multichannel" not in calls["config"]
+        assert result["audio_path"] == str(m4a_path)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

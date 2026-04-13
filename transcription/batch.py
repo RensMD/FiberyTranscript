@@ -10,6 +10,8 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Callable, Optional
 
+from audio.file_formats import load_audio_segment
+
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
@@ -116,9 +118,7 @@ def _read_audio_info(audio_path: str) -> dict:
         logger.debug("soundfile metadata read failed for %s", audio_path, exc_info=True)
 
     try:
-        from pydub import AudioSegment
-
-        audio = AudioSegment.from_file(audio_path)
+        audio = load_audio_segment(audio_path)
         return {
             "channels": int(audio.channels),
             "sample_rate": int(audio.frame_rate),
@@ -159,9 +159,7 @@ def _downmix_to_mono_wav(audio_path: str) -> str:
         logger.debug("soundfile mono downmix failed for %s", audio_path, exc_info=True)
 
     try:
-        from pydub import AudioSegment
-
-        audio = AudioSegment.from_file(audio_path)
+        audio = load_audio_segment(audio_path)
         audio.set_channels(1).export(str(output_path), format="wav")
         return str(output_path)
     except Exception as exc:
@@ -380,10 +378,8 @@ def _split_stereo_to_mono_wavs(audio_path: str, output_dir: str) -> list[str]:
         logger.debug("soundfile stereo split failed for %s", audio_path, exc_info=True)
 
     try:
-        from pydub import AudioSegment
-
         output_paths = []
-        audio = AudioSegment.from_file(audio_path)
+        audio = load_audio_segment(audio_path)
         mono_channels = audio.split_to_mono()
         if len(mono_channels) < 2:
             raise ValueError("Audio is not stereo.")

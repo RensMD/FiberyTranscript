@@ -9,6 +9,9 @@ numpy>=1.24
 scipy>=1.11
 PyAudioWPatch>=0.2.12; sys_platform == "win32"
 pyrnnoise>=0.4
+pydub>=0.25
+audioop-lts>=0.2; python_version >= "3.13"
+static-ffmpeg>=2.7
 
 # Transcription
 assemblyai>=0.30

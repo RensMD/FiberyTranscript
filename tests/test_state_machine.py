@@ -1,11 +1,14 @@
 """Tests for FiberyTranscriptApp state machine: transitions, guards, close confirmation."""
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import shutil
 import tempfile
 import threading
+
+import pytest
 
 from config.settings import Settings
 from config.session import RecordingSession, SessionContext, SessionResults
@@ -26,6 +29,16 @@ def _make_test_root(name: str) -> Path:
     shutil.rmtree(root, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+class _FakeAudioSegment:
+    def __init__(self, duration_ms: int, frame_rate: int, channels: int):
+        self._duration_ms = duration_ms
+        self.frame_rate = frame_rate
+        self.channels = channels
+
+    def __len__(self):
+        return self._duration_ms
 
 
 class TestStateConstants:
@@ -341,6 +354,89 @@ class TestUploadedFileStaging:
             assert source.exists()
             assert app._session.context.compressed_path == str(staged)
             thread_cls.return_value.start.assert_called_once_with()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_upload_and_transcribe_stages_m4a_as_compressed_upload_source(self):
+        root = _make_test_root("test_uploaded_m4a_staging")
+        try:
+            app = _make_app(
+                settings=Settings(display_name="Test", save_recordings=True),
+                data_dir=root / "appdata",
+            )
+            app._validate_audio_file = MagicMock(return_value={
+                "format": "M4A",
+                "duration_seconds": 42.0,
+                "sample_rate": 44100,
+                "channels": 1,
+                "size_bytes": 4096,
+                "decoder_backend": "ffmpeg",
+            })
+            app.stop_background_scanning = MagicMock()
+            app.start_background_scanning = MagicMock()
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+
+            source = root / "imports" / "meeting.m4a"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"m4a" * 2048)
+
+            with patch("app.threading.Thread") as thread_cls:
+                thread_cls.return_value = MagicMock()
+                app.upload_and_transcribe(str(source))
+
+            staged = Path(app._session.context.wav_path)
+            assert staged == app.data_dir / "recordings" / source.name
+            assert staged.read_bytes() == source.read_bytes()
+            assert app._session.context.compressed_path == str(staged)
+            assert app._prepared_audio_info["file_name"] == "meeting.m4a"
+            assert app._prepared_audio_info["decoder_backend"] == "ffmpeg"
+            thread_cls.return_value.start.assert_called_once_with()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class TestUploadedAudioValidation:
+    def test_validate_audio_file_accepts_m4a_via_ffmpeg_decoder_fallback(self):
+        root = _make_test_root("test_validate_m4a_decoder_fallback")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            source = root / "imports" / "meeting.m4a"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"m4a" * 2048)
+            fake_soundfile = SimpleNamespace(info=MagicMock(side_effect=RuntimeError("unsupported")))
+
+            with patch.dict(sys.modules, {"soundfile": fake_soundfile}, clear=False):
+                with patch("app.missing_ffmpeg_tools", return_value=[]):
+                    with patch(
+                        "app.load_audio_segment",
+                        return_value=_FakeAudioSegment(duration_ms=2500, frame_rate=44100, channels=2),
+                    ) as load_mock:
+                        info = app._validate_audio_file(source)
+
+            assert info["format"] == "M4A"
+            assert info["duration_seconds"] == 2.5
+            assert info["sample_rate"] == 44100
+            assert info["channels"] == 2
+            assert info["size_bytes"] == source.stat().st_size
+            assert info["decoder_backend"] == "ffmpeg"
+            load_mock.assert_called_once_with(source)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_validate_audio_file_rejects_m4a_when_ffmpeg_tools_are_missing(self):
+        root = _make_test_root("test_validate_m4a_missing_ffmpeg")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            source = root / "imports" / "meeting.m4a"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"m4a" * 2048)
+            fake_soundfile = SimpleNamespace(info=MagicMock(side_effect=RuntimeError("unsupported")))
+
+            with patch.dict(sys.modules, {"soundfile": fake_soundfile}, clear=False):
+                with patch("app.missing_ffmpeg_tools", return_value=["ffmpeg", "ffprobe"]):
+                    with pytest.raises(ValueError, match="M4A files because ffmpeg and ffprobe are not available"):
+                        app._validate_audio_file(source)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

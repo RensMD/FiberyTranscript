@@ -29,6 +29,9 @@ hidden_imports = [
     'soundfile',
     '_sounddevice_data',
     'pyrnnoise',
+    'static_ffmpeg',
+    'pydub',
+    'audioop',
     # Transcription
     'assemblyai',
     # AI
@@ -68,6 +71,20 @@ else:
 datas = [
     (os.path.join(PROJECT_ROOT, 'ui', 'static'), os.path.join('ui', 'static')),
 ]
+
+# Include static-ffmpeg binaries - REQUIRED for MP3/M4A support
+try:
+    import static_ffmpeg
+    ffmpeg_path, _ = static_ffmpeg.run.get_or_fetch_platform_executables_else_raise()
+    ffmpeg_bin_dir = os.path.dirname(ffmpeg_path)
+    platform_key = os.path.basename(ffmpeg_bin_dir)  # e.g., "win32", "darwin_arm64", "linux"
+    datas.append((ffmpeg_bin_dir, os.path.join('static_ffmpeg', 'bin', platform_key)))
+    print(f"Bundling ffmpeg binaries from: {ffmpeg_bin_dir}")
+except Exception as e:
+    raise RuntimeError(
+        f"Cannot locate static-ffmpeg binaries: {e}\n"
+        "Run 'python build/build.py' which ensures binaries are downloaded first."
+    )
 
 # Exclude config/secrets.py from the bundle — keys come from keyring/env
 excludes = [

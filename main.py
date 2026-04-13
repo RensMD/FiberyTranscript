@@ -5,8 +5,64 @@ Captures mic + speaker audio, transcribes with speaker diarization,
 and integrates with Fibery.io for meeting summarization.
 """
 
-import logging
+import os
+import platform as platform_module
 import sys
+
+# Configure ffmpeg PATH before any imports that might use pydub.
+# pydub checks PATH at import time, so this must happen first.
+_ffmpeg_configured = False
+_ffmpeg_error = None
+
+
+def _get_platform_key():
+    """Return platform key matching static-ffmpeg's naming convention."""
+    machine = platform_module.machine().lower()
+    is_arm = machine in ("arm64", "aarch64")
+
+    if sys.platform == "win32":
+        return "win32"
+    if sys.platform == "darwin":
+        return "darwin_arm64" if is_arm else "darwin"
+    # Linux
+    return "linux_arm64" if is_arm else "linux"
+
+
+def _get_bundled_ffmpeg_dir():
+    """Find ffmpeg directory in PyInstaller bundle. Returns None if not found."""
+    if not getattr(sys, "frozen", False):
+        return None
+
+    bundle_dir = sys._MEIPASS  # type: ignore[attr-defined]
+    platform_key = _get_platform_key()
+    bin_dir = os.path.join(bundle_dir, "static_ffmpeg", "bin", platform_key)
+    ffmpeg_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
+
+    if os.path.isfile(os.path.join(bin_dir, ffmpeg_name)):
+        return bin_dir
+    return None
+
+
+# Frozen builds: use ONLY bundled ffmpeg, never download
+# Dev builds: use static-ffmpeg package (may download on first run)
+if getattr(sys, "frozen", False):
+    bundled_dir = _get_bundled_ffmpeg_dir()
+    if bundled_dir:
+        os.environ["PATH"] = bundled_dir + os.pathsep + os.environ.get("PATH", "")
+        _ffmpeg_configured = True
+    else:
+        _ffmpeg_error = "Bundled ffmpeg not found in frozen build"
+else:
+    try:
+        import static_ffmpeg
+        ffmpeg_path, _ = static_ffmpeg.run.get_or_fetch_platform_executables_else_raise()
+        bin_dir = os.path.dirname(ffmpeg_path)
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+        _ffmpeg_configured = True
+    except Exception as e:
+        _ffmpeg_error = str(e)
+
+import logging
 
 if sys.platform == "win32":
     import ctypes
@@ -31,6 +87,11 @@ def main():
 
     logger = logging.getLogger(__name__)
     logger.info("Fibery Transcript starting...")
+    if _ffmpeg_configured:
+        logger.info("ffmpeg available for MP3/M4A support")
+    else:
+        logger.error("ffmpeg not available: %s", _ffmpeg_error or "unknown error")
+        logger.warning("MP3/M4A/AAC/WMA/WEBM file support will not work")
     logger.info("Data directory: %s", data_dir)
 
     instance_guard = acquire_single_instance_guard()

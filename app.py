@@ -13,6 +13,12 @@ from typing import Optional
 
 from audio.capture import AudioCapture, AudioDevice, create_audio_capture
 from audio.device_scanner import scan_all_devices
+from audio.file_formats import (
+    FFMPEG_BACKED_AUDIO_FORMATS,
+    SUPPORTED_UPLOADED_AUDIO_EXTENSIONS,
+    load_audio_segment,
+    missing_ffmpeg_tools,
+)
 from audio.health_monitor import SPEECH_THRESHOLD
 from audio.mixer import AudioMixer
 from audio.recorder import WavRecorder
@@ -330,9 +336,7 @@ class FiberyTranscriptApp:
             logger.debug("soundfile stereo layout analysis failed for %s", file_path, exc_info=True)
 
         try:
-            from pydub import AudioSegment
-
-            audio = AudioSegment.from_file(str(file_path))
+            audio = load_audio_segment(file_path)
             if audio.channels < 2:
                 return "mono"
             audio = audio[:90000]
@@ -1303,9 +1307,7 @@ class FiberyTranscriptApp:
 
     # --- File Upload (Browse & Transcribe) ---
 
-    SUPPORTED_AUDIO_EXTENSIONS = {
-        ".wav", ".ogg", ".flac", ".mp3", ".m4a", ".aac", ".wma", ".webm",
-    }
+    SUPPORTED_AUDIO_EXTENSIONS = SUPPORTED_UPLOADED_AUDIO_EXTENSIONS
 
     def _validate_audio_file(self, path: Path) -> dict:
         """Validate that a file is a readable audio file.
@@ -1340,6 +1342,7 @@ class FiberyTranscriptApp:
                 "sample_rate": info.samplerate,
                 "channels": info.channels,
                 "size_bytes": size_bytes,
+                "decoder_backend": "soundfile",
             }
         except ValueError:
             raise
@@ -1348,9 +1351,16 @@ class FiberyTranscriptApp:
 
         # Try pydub for formats soundfile can't handle
         try:
-            from pydub import AudioSegment
+            missing_tools = missing_ffmpeg_tools() if suffix in FFMPEG_BACKED_AUDIO_FORMATS else []
+            if missing_tools:
+                tools = " and ".join(missing_tools)
+                verb = "are" if len(missing_tools) > 1 else "is"
+                raise ValueError(
+                    f"Cannot read {suffix.lstrip('.').upper()} files because {tools} {verb} not available. "
+                    "MP3/M4A/AAC/WMA/WEBM uploads require ffmpeg support."
+                )
 
-            audio = AudioSegment.from_file(str(path))
+            audio = load_audio_segment(path)
             duration = len(audio) / 1000.0
             if duration < 1.0:
                 raise ValueError("Audio file is less than 1 second long.")
@@ -1360,15 +1370,21 @@ class FiberyTranscriptApp:
                 "sample_rate": audio.frame_rate,
                 "channels": audio.channels,
                 "size_bytes": size_bytes,
+                "decoder_backend": "ffmpeg" if suffix in FFMPEG_BACKED_AUDIO_FORMATS else "pydub",
             }
         except ValueError:
             raise
         except ImportError:
             raise ValueError(
-                f"Cannot read {suffix} files. Install ffmpeg for MP3/M4A support."
+                f"Cannot read {suffix.lstrip('.').upper()} files because pydub is not installed."
             )
         except Exception as e:
-            raise ValueError(f"Cannot read audio file: {e}")
+            if suffix in FFMPEG_BACKED_AUDIO_FORMATS:
+                raise ValueError(
+                    f"Cannot decode {suffix.lstrip('.').upper()} audio: {e}. "
+                    "Try exporting the file again or converting it to WAV."
+                ) from e
+            raise ValueError(f"Cannot read audio file: {e}") from e
 
     def prepare_uploaded_audio(self, file_path: str) -> dict:
         """Validate an uploaded audio file and stage it for transcription."""

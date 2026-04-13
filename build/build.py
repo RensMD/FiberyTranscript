@@ -61,6 +61,19 @@ def check_dependencies():
         except ImportError:
             print("WARNING: PyAudioWPatch not installed (needed for Windows loopback)")
 
+    # Ensure static-ffmpeg binaries are downloaded - REQUIRED for MP3/M4A support
+    try:
+        import static_ffmpeg
+        ffmpeg, ffprobe = static_ffmpeg.run.get_or_fetch_platform_executables_else_raise()
+        print(f"static-ffmpeg binaries ready: {Path(ffmpeg).parent}")
+    except ImportError:
+        print("ERROR: static-ffmpeg not installed. Run: pip install static-ffmpeg>=2.7")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR: static-ffmpeg binary fetch failed: {e}")
+        print("       Cannot build without ffmpeg binaries (needed for MP3/M4A support)")
+        sys.exit(1)
+
 
 def build_pyinstaller():
     """Run PyInstaller with the spec file."""
