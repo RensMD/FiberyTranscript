@@ -232,7 +232,7 @@ def _apply_speaker_hints(
 
 def _build_config_kwargs(
     *,
-    word_boost: Optional[list[str]],
+    keyterms_prompt: Optional[list[str]],
     speaker_hints: Optional[dict],
     multichannel: bool,
 ) -> dict:
@@ -243,10 +243,13 @@ def _build_config_kwargs(
     }
     if multichannel:
         config_kwargs["multichannel"] = True
-    if word_boost:
-        config_kwargs["word_boost"] = word_boost
-        config_kwargs["boost_param"] = "high"
-        logger.info("Word boost: %d terms", len(word_boost))
+    if keyterms_prompt:
+        config_kwargs["keyterms_prompt"] = keyterms_prompt
+        logger.info(
+            "Keyterms prompt: %d phrases / %d words",
+            len(keyterms_prompt),
+            sum(len(term.split()) for term in keyterms_prompt),
+        )
     _apply_speaker_hints(config_kwargs, speaker_hints, multichannel=multichannel)
     return config_kwargs
 
@@ -497,7 +500,7 @@ def transcribe_with_diarization(
     audio_path: str,
     on_progress: Optional[Callable[[str], None]] = None,
     compressed_path: Optional[str] = None,
-    word_boost: Optional[list[str]] = None,
+    keyterms_prompt: Optional[list[str]] = None,
     speaker_hints: Optional[dict] = None,
     remove_echo: bool = False,
     recording_mode: str = "mic_and_speakers",
@@ -561,7 +564,7 @@ def transcribe_with_diarization(
                 channel_label = "microphone channel" if channel_index == 0 else "speaker channel"
                 upload_path = _prepare_upload_path(mono_path, None, on_progress, channel_label)
                 config_kwargs = _build_config_kwargs(
-                    word_boost=word_boost,
+                    keyterms_prompt=keyterms_prompt,
                     speaker_hints=mono_speaker_hints,
                     multichannel=False,
                 )
@@ -610,7 +613,7 @@ def transcribe_with_diarization(
 
     upload_path = _prepare_upload_path(audio_path, compressed_path, on_progress)
     config_kwargs = _build_config_kwargs(
-        word_boost=word_boost,
+        keyterms_prompt=keyterms_prompt,
         speaker_hints=speaker_hints,
         multichannel=is_multichannel,
     )

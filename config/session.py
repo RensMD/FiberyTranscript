@@ -17,7 +17,7 @@ class SessionContext:
 
     entity: Optional[Any] = None          # FiberyEntity snapshot
     fibery_client: Optional[Any] = None   # FiberyClient snapshot
-    entity_context: Optional[dict] = None # Word-boost / summary context snapshot
+    entity_context: Optional[dict] = None # AssemblyAI keyterms / summary context snapshot
     wav_path: str = ""
     compressed_path: str = ""
     is_uploaded_file: bool = False

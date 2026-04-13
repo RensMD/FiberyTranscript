@@ -104,7 +104,7 @@ class FiberyTranscriptApp:
         # Cached Fibery validation (UI-level; may change while session is live)
         self._validated_entity = None
         self._fibery_client = None
-        # Entity context for word boost / summary enrichment
+        # Entity context for AssemblyAI keyterms / summary enrichment
         self._entity_context = None
         self._linked_transcript_text: str = ""
 
@@ -2134,17 +2134,35 @@ class FiberyTranscriptApp:
                 if not _stale():
                     self._notify_js(f"window.onProcessingProgress({json.dumps(msg)})")
 
-            # Build word boost and diarization hints from frozen entity context
-            word_boost = None
+            # Build keyterms prompt and diarization hints from frozen entity context
+            keyterms_prompt = None
             speaker_hints = None
             entity_ctx = ctx.entity_context
             if not entity_ctx and ctx.entity and ctx.fibery_client:
                 # Fallback: fetch if not captured at session start
                 entity_ctx = self._fetch_entity_context()
             if entity_ctx:
-                from integrations.context_builder import build_speaker_hints, build_word_boost
-                word_boost = build_word_boost(entity_ctx) or None
+                from integrations.context_builder import build_speaker_hints, build_keyterms_prompt
+                keyterms_result = build_keyterms_prompt(entity_ctx)
+                keyterms_prompt = keyterms_result.terms or None
                 speaker_hints = build_speaker_hints(entity_ctx) or None
+                skipped_summary = keyterms_result.format_skipped_reasons()
+                if keyterms_prompt:
+                    suffix = f" (filtered: {skipped_summary})" if skipped_summary else ""
+                    logger.info(
+                        "AssemblyAI automatic keyterms applied: %d phrases / %d words%s",
+                        len(keyterms_result.terms),
+                        keyterms_result.total_words,
+                        suffix,
+                    )
+                else:
+                    suffix = f" ({skipped_summary})" if skipped_summary else ""
+                    logger.info(
+                        "AssemblyAI automatic keyterms not applied: no high-confidence candidates survived filtering%s",
+                        suffix,
+                    )
+            else:
+                logger.info("AssemblyAI automatic keyterms not applied: no entity context available")
 
             # Post-processing settings from user preferences
             pp_settings = self._build_post_process_settings()
@@ -2154,7 +2172,7 @@ class FiberyTranscriptApp:
                 audio_path=wav_path,
                 on_progress=on_progress,
                 compressed_path=compressed_path,
-                word_boost=word_boost,
+                keyterms_prompt=keyterms_prompt,
                 speaker_hints=speaker_hints,
                 remove_echo=options.remove_echo,
                 recording_mode=options.recording_mode,

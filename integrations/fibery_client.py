@@ -282,7 +282,7 @@ class FiberyClient:
         """Fetch meeting context (participants, organizations) from a Fibery entity.
 
         Returns an EntityContext with all available names for use in transcription
-        word boost and summarization context. Returns empty EntityContext on failure.
+        keyterms prompting and summarization context. Returns empty EntityContext on failure.
         """
         if not entity.uuid:
             self.get_entity_uuid(entity)

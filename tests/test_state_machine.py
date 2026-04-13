@@ -1,5 +1,6 @@
 """Tests for FiberyTranscriptApp state machine: transitions, guards, close confirmation."""
 
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import threading
 
 import pytest
 
+from integrations.fibery_client import EntityContext
 from config.settings import Settings
 from config.session import RecordingSession, SessionContext, SessionResults
 from transcription.formatter import format_diarized_transcript
@@ -877,6 +879,82 @@ class TestRecordingBackgroundScanning:
             cleanup.assert_called_once()
             assert cleanup.call_args.kwargs["audio_path"] == result["audio_path"]
             assert session.results.get_cleaned_transcript() == "Cleaned transcript"
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_batch_processing_logs_and_passes_curated_keyterms(self, caplog):
+        root = _make_test_root("test_batch_processing_logs_keyterms")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.state = app.STATE_PROCESSING
+            app._resume_background_scanning = MagicMock()
+            app._notify_js = MagicMock()
+            session = RecordingSession(
+                SessionContext(
+                    wav_path=str(root / "meeting.wav"),
+                    entity_context=EntityContext(
+                        entity_name="Quarterly Review with Acme",
+                        assignee_names=["Alice Johnson"],
+                        people_names=["alice johnson", "Bob Stone"],
+                        operator_names=["Carol Smith"],
+                        organization_names=["Acme Holdings"],
+                    ),
+                )
+            )
+            result = {
+                "utterances": [{"speaker": "A", "text": "Hello", "start": 0, "end": 1000}],
+                "full_text": "Hello",
+                "language": "en",
+                "audio_path": "",
+            }
+
+            with patch("app.get_key", side_effect=lambda key: "assembly-key" if key == "assemblyai_api_key" else ""):
+                with patch("transcription.batch.transcribe_with_diarization", return_value=result) as transcribe:
+                    with caplog.at_level(logging.INFO):
+                        app._run_batch_processing(session)
+
+            assert transcribe.call_args.kwargs["keyterms_prompt"] == [
+                "Alice Johnson",
+                "Bob Stone",
+                "Carol Smith",
+                "Acme Holdings",
+            ]
+            assert "AssemblyAI automatic keyterms applied: 4 phrases / 8 words" in caplog.text
+            assert "filtered: duplicate=1" in caplog.text
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_batch_processing_logs_when_no_keyterms_survive_filtering(self, caplog):
+        root = _make_test_root("test_batch_processing_logs_no_keyterms")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.state = app.STATE_PROCESSING
+            app._resume_background_scanning = MagicMock()
+            app._notify_js = MagicMock()
+            session = RecordingSession(
+                SessionContext(
+                    wav_path=str(root / "meeting.wav"),
+                    entity_context=EntityContext(
+                        assignee_names=["Amy"],
+                        organization_names=["IBM"],
+                    ),
+                )
+            )
+            result = {
+                "utterances": [{"speaker": "A", "text": "Hello", "start": 0, "end": 1000}],
+                "full_text": "Hello",
+                "language": "en",
+                "audio_path": "",
+            }
+
+            with patch("app.get_key", side_effect=lambda key: "assembly-key" if key == "assemblyai_api_key" else ""):
+                with patch("transcription.batch.transcribe_with_diarization", return_value=result) as transcribe:
+                    with caplog.at_level(logging.INFO):
+                        app._run_batch_processing(session)
+
+            assert transcribe.call_args.kwargs["keyterms_prompt"] is None
+            assert "AssemblyAI automatic keyterms not applied: no high-confidence candidates survived filtering" in caplog.text
+            assert "unsupported_length=2" in caplog.text
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

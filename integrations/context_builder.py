@@ -1,6 +1,31 @@
 """Build transcription and summarization context from Fibery entity data."""
 
+import re
+from collections import Counter
+from dataclasses import dataclass, field
+
 from integrations.fibery_client import EntityContext
+
+_KEYTERMS_MAX_TOTAL_WORDS = 50
+_KEYTERMS_MAX_WORDS_PER_PHRASE = 6
+_KEYTERMS_MIN_CHARS = 5
+_KEYTERMS_MAX_CHARS = 50
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+@dataclass(frozen=True)
+class KeytermsPromptBuildResult:
+    """Curated keyterms plus metadata for logging/debugging."""
+
+    terms: list[str] = field(default_factory=list)
+    total_words: int = 0
+    skipped_reasons: dict[str, int] = field(default_factory=dict)
+
+    def format_skipped_reasons(self) -> str:
+        """Return a compact summary like ``duplicate=2, word_budget=1``."""
+        if not self.skipped_reasons:
+            return ""
+        return ", ".join(f"{reason}={count}" for reason, count in self.skipped_reasons.items())
 
 
 def build_speaker_names(context: EntityContext) -> list[str]:
@@ -59,54 +84,59 @@ def build_speaker_hints(context: EntityContext) -> dict:
     return hints
 
 
-def build_word_boost(context: EntityContext) -> list[str]:
-    """Build AssemblyAI word_boost list from entity context.
+def build_keyterms_prompt(context: EntityContext) -> KeytermsPromptBuildResult:
+    """Build a conservative AssemblyAI ``keyterms_prompt`` from entity context.
 
-    Collects participant names, organization names, and operator names.
-    For multi-word names, includes both the full name and first name.
-    Returns a deduplicated list (max 1000 entries, each max 6 words).
+    The automatic prompt stays intentionally small and high-confidence:
+    participants first, then operators, then organizations. Terms are
+    whitespace-normalized, deduplicated case-insensitively, filtered to the
+    shared Universal-3 Pro / Universal-2 envelope, and capped by total words.
     """
     if not context:
-        return []
+        return KeytermsPromptBuildResult()
 
-    raw = []
+    candidates = [
+        *context.assignee_names,
+        *context.people_names,
+        *context.operator_names,
+        *context.organization_names,
+    ]
+    seen: set[str] = set()
+    terms: list[str] = []
+    total_words = 0
+    skipped = Counter()
 
-    for name in context.assignee_names:
-        raw.append(name)
-        _add_first_name(raw, name)
-
-    for name in context.people_names:
-        raw.append(name)
-        _add_first_name(raw, name)
-
-    for name in context.organization_names:
-        raw.append(name)
-
-    for name in context.operator_names:
-        raw.append(name)
-
-    # Extract keywords from meeting title (skip very short/common words)
-    if context.entity_name:
-        for word in context.entity_name.split():
-            if len(word) > 3:
-                raw.append(word)
-
-    # Deduplicate (case-insensitive) and filter
-    seen = set()
-    result = []
-    for term in raw:
-        term = term.strip()
+    for raw_term in candidates:
+        term = _normalize_keyterm(raw_term)
         if not term:
+            skipped["empty"] += 1
             continue
-        key = term.lower()
-        if key in seen:
-            continue
-        if len(term.split()) > 6:
-            continue
-        seen.add(key)
-        result.append(term)
 
-    return result[:1000]
+        word_count = len(term.split())
+        if word_count > _KEYTERMS_MAX_WORDS_PER_PHRASE:
+            skipped["too_many_words"] += 1
+            continue
+        if len(term) < _KEYTERMS_MIN_CHARS or len(term) > _KEYTERMS_MAX_CHARS:
+            skipped["unsupported_length"] += 1
+            continue
+
+        key = term.casefold()
+        if key in seen:
+            skipped["duplicate"] += 1
+            continue
+        if total_words + word_count > _KEYTERMS_MAX_TOTAL_WORDS:
+            skipped["word_budget"] += 1
+            continue
+
+        seen.add(key)
+        terms.append(term)
+        total_words += word_count
+
+    return KeytermsPromptBuildResult(
+        terms=terms,
+        total_words=total_words,
+        skipped_reasons=dict(skipped),
+    )
 
 
 def build_summary_context(context: EntityContext) -> str:
@@ -147,8 +177,6 @@ def build_summary_context(context: EntityContext) -> str:
     return "\n".join(lines)
 
 
-def _add_first_name(names: list[str], full_name: str) -> None:
-    """Add the first name as a separate entry if the name has multiple parts."""
-    parts = full_name.strip().split()
-    if len(parts) > 1:
-        names.append(parts[0])
+def _normalize_keyterm(term: str) -> str:
+    """Collapse whitespace so equivalent phrases dedupe reliably."""
+    return _WHITESPACE_RE.sub(" ", (term or "").strip())

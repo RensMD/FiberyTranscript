@@ -1,3 +1,4 @@
+import logging
 import sys
 import shutil
 import tempfile
@@ -341,7 +342,7 @@ def test_transcribe_keeps_multichannel_for_distinct_speakers_mode():
 
 def test_multichannel_transcription_skips_speaker_identification_hints():
     config = batch._build_config_kwargs(
-        word_boost=["Andrej", "Google"],
+        keyterms_prompt=["Andrej", "Google"],
         speaker_hints={
             "speaker_options": {
                 "min_speakers_expected": 2,
@@ -365,7 +366,7 @@ def test_multichannel_transcription_skips_speaker_identification_hints():
 
 def test_mono_transcription_keeps_speaker_identification_hints():
     config = batch._build_config_kwargs(
-        word_boost=None,
+        keyterms_prompt=None,
         speaker_hints={
             "speakers_expected": 2,
             "speaker_identification": ["Andrej Karpathy", "Dwarkesh Patel"],
@@ -382,6 +383,28 @@ def test_mono_transcription_keeps_speaker_identification_hints():
             }
         }
     }
+
+
+def test_build_config_kwargs_omits_empty_keyterms_prompt():
+    config = batch._build_config_kwargs(
+        keyterms_prompt=[],
+        speaker_hints=None,
+        multichannel=False,
+    )
+
+    assert "keyterms_prompt" not in config
+
+
+def test_build_config_kwargs_logs_phrase_and_word_budget(caplog):
+    with caplog.at_level(logging.INFO):
+        config = batch._build_config_kwargs(
+            keyterms_prompt=["Alice Johnson", "Acme Holdings"],
+            speaker_hints=None,
+            multichannel=False,
+        )
+
+    assert config["keyterms_prompt"] == ["Alice Johnson", "Acme Holdings"]
+    assert "Keyterms prompt: 2 phrases / 4 words" in caplog.text
 
 
 def test_post_processor_returns_original_file_when_no_stage_changes_audio():
