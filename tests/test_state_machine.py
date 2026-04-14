@@ -1,6 +1,7 @@
 """Tests for FiberyTranscriptApp state machine: transitions, guards, close confirmation."""
 
 import logging
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from integrations.fibery_client import EntityContext
 from config.settings import Settings
 from config.session import RecordingSession, SessionContext, SessionResults
 from transcription.formatter import format_diarized_transcript
+from utils.filename_utils import WINDOWS_SAFE_PATH_LIMIT
 
 
 def _make_app(settings: Settings | None = None, data_dir: Path | None = None):
@@ -69,6 +71,16 @@ class _FakeAudioSegment:
 
     def __len__(self):
         return self._duration_ms
+
+
+def _prepared_audio_info_for_path(path: Path, is_uploaded_file: bool = False) -> dict:
+    return {
+        "file_path": str(path),
+        "file_name": path.name,
+        "is_uploaded_file": is_uploaded_file,
+        "recording_mode_recommendation": "mic_only",
+        "recording_mode_reason": "",
+    }
 
 
 class TestStateConstants:
@@ -517,6 +529,279 @@ class TestMeetingMetadata:
         assert session_arg.context.entity_context == {"company": "Fibery"}
         assert session_arg.context.wav_path == "meeting.wav"
 
+    def test_start_transcription_renames_placeholder_recording_for_selected_entity(self, monkeypatch):
+        root = _make_test_root("test_start_transcription_renames_placeholder")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+            entity = SimpleNamespace(space="General", database="Internal Meeting", entity_name="Weekly sync", uuid="entity-b")
+            recordings_dir = app.data_dir / "recordings"
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = recordings_dir / "2026-04-14_09_30_recording.wav"
+            ogg_path = recordings_dir / "2026-04-14_09_30_recording.ogg"
+            wav_path.write_bytes(b"wav")
+            ogg_path.write_bytes(b"ogg")
+            app._session = RecordingSession(SessionContext(
+                wav_path=str(wav_path),
+                compressed_path=str(ogg_path),
+                is_uploaded_file=False,
+            ))
+            app._prepared_audio_info = _prepared_audio_info_for_path(wav_path)
+            app._validated_entity = entity
+            app._fibery_client = MagicMock()
+            app.state = app.STATE_PREPARED
+            app._run_batch_processing = MagicMock()
+            app._build_prepared_audio_info = MagicMock(
+                side_effect=lambda path, is_uploaded: _prepared_audio_info_for_path(path, is_uploaded)
+            )
+
+            spawned = []
+            monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+            result = app.start_transcription()
+
+            renamed_wav = recordings_dir / "2026-04-14_09_30_Weekly-sync.wav"
+            renamed_ogg = recordings_dir / "2026-04-14_09_30_Weekly-sync.ogg"
+            assert result["success"] is True
+            assert not wav_path.exists()
+            assert not ogg_path.exists()
+            assert renamed_wav.exists()
+            assert renamed_ogg.exists()
+            assert app._prepared_audio_info["file_name"] == renamed_wav.name
+            assert result["prepared_audio"]["file_name"] == renamed_wav.name
+            assert app._session.context.wav_path == str(renamed_wav)
+            assert app._session.context.compressed_path == str(renamed_ogg)
+            session_arg = spawned[0]._args[0]
+            assert session_arg.context.entity is entity
+            assert session_arg.context.wav_path == str(renamed_wav)
+            assert session_arg.context.compressed_path == str(renamed_ogg)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_start_transcription_preserves_merged_prefix_when_renaming_placeholder_recording(self, monkeypatch):
+        root = _make_test_root("test_start_transcription_renames_merged_placeholder")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+            recordings_dir = app.data_dir / "recordings"
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = recordings_dir / "merged_2026-04-14_09_30_recording.wav"
+            wav_path.write_bytes(b"wav")
+            app._session = RecordingSession(SessionContext(
+                wav_path=str(wav_path),
+                compressed_path="",
+                is_uploaded_file=False,
+            ))
+            app._prepared_audio_info = _prepared_audio_info_for_path(wav_path)
+            app._validated_entity = SimpleNamespace(entity_name="Market interview")
+            app.state = app.STATE_PREPARED
+            app._run_batch_processing = MagicMock()
+            app._build_prepared_audio_info = MagicMock(
+                side_effect=lambda path, is_uploaded: _prepared_audio_info_for_path(path, is_uploaded)
+            )
+
+            spawned = []
+            monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+            result = app.start_transcription()
+
+            renamed_wav = recordings_dir / "merged_2026-04-14_09_30_Market-interview.wav"
+            assert result["success"] is True
+            assert not wav_path.exists()
+            assert renamed_wav.exists()
+            assert app._session.context.wav_path == str(renamed_wav)
+            assert spawned[0]._args[0].context.wav_path == str(renamed_wav)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_start_transcription_renames_placeholder_recording_with_shared_collision_suffix(self, monkeypatch):
+        root = _make_test_root("test_start_transcription_rename_collision")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+            recordings_dir = app.data_dir / "recordings"
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = recordings_dir / "2026-04-14_09_30_recording.wav"
+            ogg_path = recordings_dir / "2026-04-14_09_30_recording.ogg"
+            wav_path.write_bytes(b"wav")
+            ogg_path.write_bytes(b"ogg")
+            (recordings_dir / "2026-04-14_09_30_Weekly-sync.wav").write_bytes(b"other-wav")
+            (recordings_dir / "2026-04-14_09_30_Weekly-sync.ogg").write_bytes(b"other-ogg")
+            app._session = RecordingSession(SessionContext(
+                wav_path=str(wav_path),
+                compressed_path=str(ogg_path),
+                is_uploaded_file=False,
+            ))
+            app._prepared_audio_info = _prepared_audio_info_for_path(wav_path)
+            app._validated_entity = SimpleNamespace(entity_name="Weekly sync")
+            app.state = app.STATE_PREPARED
+            app._run_batch_processing = MagicMock()
+            app._build_prepared_audio_info = MagicMock(
+                side_effect=lambda path, is_uploaded: _prepared_audio_info_for_path(path, is_uploaded)
+            )
+
+            spawned = []
+            monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+            result = app.start_transcription()
+
+            renamed_wav = recordings_dir / "2026-04-14_09_30_Weekly-sync_2.wav"
+            renamed_ogg = recordings_dir / "2026-04-14_09_30_Weekly-sync_2.ogg"
+            assert result["success"] is True
+            assert renamed_wav.exists()
+            assert renamed_ogg.exists()
+            assert app._session.context.wav_path == str(renamed_wav)
+            assert app._session.context.compressed_path == str(renamed_ogg)
+            assert spawned[0]._args[0].context.wav_path == str(renamed_wav)
+            assert spawned[0]._args[0].context.compressed_path == str(renamed_ogg)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_start_transcription_ignores_orphaned_target_ogg_when_recording_has_no_ogg_source(self, monkeypatch):
+        root = _make_test_root("test_start_transcription_rename_orphan_ogg")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+            recordings_dir = app.data_dir / "recordings"
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = recordings_dir / "2026-04-14_09_30_recording.wav"
+            wav_path.write_bytes(b"wav")
+            orphan_ogg = recordings_dir / "2026-04-14_09_30_Weekly-sync.ogg"
+            orphan_ogg.write_bytes(b"orphan-ogg")
+            app._session = RecordingSession(SessionContext(
+                wav_path=str(wav_path),
+                compressed_path="",
+                is_uploaded_file=False,
+            ))
+            app._prepared_audio_info = _prepared_audio_info_for_path(wav_path)
+            app._validated_entity = SimpleNamespace(entity_name="Weekly sync")
+            app.state = app.STATE_PREPARED
+            app._run_batch_processing = MagicMock()
+            app._build_prepared_audio_info = MagicMock(
+                side_effect=lambda path, is_uploaded: _prepared_audio_info_for_path(path, is_uploaded)
+            )
+
+            spawned = []
+            monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+            result = app.start_transcription()
+
+            renamed_wav = recordings_dir / "2026-04-14_09_30_Weekly-sync.wav"
+            assert result["success"] is True
+            assert renamed_wav.exists()
+            assert orphan_ogg.exists()
+            assert app._session.context.wav_path == str(renamed_wav)
+            assert app._session.context.compressed_path == ""
+            assert spawned[0]._args[0].context.wav_path == str(renamed_wav)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_start_transcription_does_not_rename_uploaded_audio_even_with_placeholder_stem(self, monkeypatch):
+        root = _make_test_root("test_start_transcription_uploaded_no_rename")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+            wav_path = root / "2026-04-14_09_30_recording.wav"
+            wav_path.write_bytes(b"wav")
+            app._session = RecordingSession(SessionContext(
+                wav_path=str(wav_path),
+                compressed_path="",
+                is_uploaded_file=True,
+            ))
+            app._prepared_audio_info = _prepared_audio_info_for_path(wav_path, is_uploaded_file=True)
+            app._validated_entity = SimpleNamespace(entity_name="Weekly sync")
+            app.state = app.STATE_PREPARED
+            app._run_batch_processing = MagicMock()
+            app._build_prepared_audio_info = MagicMock(side_effect=AssertionError("should not rebuild"))
+
+            spawned = []
+            monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+            result = app.start_transcription()
+
+            assert result["success"] is True
+            assert wav_path.exists()
+            assert app._session.context.wav_path == str(wav_path)
+            assert spawned[0]._args[0].context.wav_path == str(wav_path)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_start_transcription_does_not_rename_non_placeholder_recording_stem(self, monkeypatch):
+        root = _make_test_root("test_start_transcription_named_recording_no_rename")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+            recordings_dir = app.data_dir / "recordings"
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = recordings_dir / "2026-04-14_09_30_Weekly-sync.wav"
+            wav_path.write_bytes(b"wav")
+            app._session = RecordingSession(SessionContext(
+                wav_path=str(wav_path),
+                compressed_path="",
+                is_uploaded_file=False,
+            ))
+            app._prepared_audio_info = _prepared_audio_info_for_path(wav_path)
+            app._validated_entity = SimpleNamespace(entity_name="Weekly sync")
+            app.state = app.STATE_PREPARED
+            app._run_batch_processing = MagicMock()
+            app._build_prepared_audio_info = MagicMock(side_effect=AssertionError("should not rebuild"))
+
+            spawned = []
+            monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+            result = app.start_transcription()
+
+            assert result["success"] is True
+            assert wav_path.exists()
+            assert app._session.context.wav_path == str(wav_path)
+            assert spawned[0]._args[0].context.wav_path == str(wav_path)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_start_transcription_continues_when_placeholder_recording_rename_fails(self, monkeypatch):
+        root = _make_test_root("test_start_transcription_rename_failure")
+        try:
+            app = _make_app(data_dir=root / "appdata")
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+            recordings_dir = app.data_dir / "recordings"
+            recordings_dir.mkdir(parents=True, exist_ok=True)
+            wav_path = recordings_dir / "2026-04-14_09_30_recording.wav"
+            ogg_path = recordings_dir / "2026-04-14_09_30_recording.ogg"
+            wav_path.write_bytes(b"wav")
+            ogg_path.write_bytes(b"ogg")
+            app._session = RecordingSession(SessionContext(
+                wav_path=str(wav_path),
+                compressed_path=str(ogg_path),
+                is_uploaded_file=False,
+            ))
+            app._prepared_audio_info = _prepared_audio_info_for_path(wav_path)
+            app._validated_entity = SimpleNamespace(entity_name="Weekly sync")
+            app.state = app.STATE_PREPARED
+            app._run_batch_processing = MagicMock()
+            app._build_prepared_audio_info = MagicMock(side_effect=AssertionError("should not rebuild"))
+
+            spawned = []
+            monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+            with patch.object(app, "_rename_paths_with_rollback", side_effect=OSError("blocked")):
+                result = app.start_transcription()
+
+            assert result["success"] is True
+            assert wav_path.exists()
+            assert ogg_path.exists()
+            assert app._session.context.wav_path == str(wav_path)
+            assert app._session.context.compressed_path == str(ogg_path)
+            assert spawned[0]._args[0].context.wav_path == str(wav_path)
+            assert spawned[0]._args[0].context.compressed_path == str(ogg_path)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 class TestUndoableReplacement:
     def test_undo_session_replace_restores_stashed_workflow_and_discards_replacement_recording(self):
@@ -692,7 +977,8 @@ class TestUploadedFileStaging:
                 app.upload_and_transcribe(str(source))
 
             staged = Path(app._session.context.wav_path)
-            assert staged == app.data_dir / "recordings" / source.name
+            assert staged.parent == app.data_dir / "recordings"
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_recording_meeting\.mp3", staged.name)
             assert staged.read_bytes() == b"audio-data"
             assert source.exists()
             assert app._session.context.compressed_path == str(staged)
@@ -729,11 +1015,45 @@ class TestUploadedFileStaging:
                 app.upload_and_transcribe(str(source))
 
             staged = Path(app._session.context.wav_path)
-            assert staged == app.data_dir / "recordings" / source.name
+            assert staged.parent == app.data_dir / "recordings"
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_recording_meeting\.m4a", staged.name)
             assert staged.read_bytes() == source.read_bytes()
             assert app._session.context.compressed_path == str(staged)
-            assert app._prepared_audio_info["file_name"] == "meeting.m4a"
+            assert app._prepared_audio_info["file_name"] == staged.name
             assert app._prepared_audio_info["decoder_backend"] == "ffmpeg"
+            thread_cls.return_value.start.assert_called_once_with()
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_upload_and_transcribe_truncates_long_meeting_name_for_windows_safe_saved_path(self):
+        root = _make_test_root("test_uploaded_copy_long_meeting_name")
+        try:
+            recordings_dir = root / "saved-audio" / "deep" / "folder" / "for" / "path" / "safety"
+            app = _make_app(
+                settings=Settings(display_name="Test", recordings_dir=str(recordings_dir), save_recordings=True),
+                data_dir=root / "appdata",
+            )
+            app._validated_entity = SimpleNamespace(entity_name="Quarterly planning " * 40)
+            app._validate_audio_file = MagicMock()
+            app.stop_background_scanning = MagicMock()
+            app.start_background_scanning = MagicMock()
+            app.audio_capture = MagicMock()
+            app.audio_capture.is_capturing.return_value = False
+
+            source = root / "imports" / "meeting.wav"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"wav-data")
+
+            with patch("app.threading.Thread") as thread_cls:
+                thread_cls.return_value = MagicMock()
+                app.upload_and_transcribe(str(source))
+
+            staged = Path(app._session.context.wav_path)
+            assert staged.exists()
+            assert staged.parent == recordings_dir
+            assert len(str(staged)) <= WINDOWS_SAFE_PATH_LIMIT
+            assert staged.suffix == ".wav"
+            assert staged.name.startswith("20")
             thread_cls.return_value.start.assert_called_once_with()
         finally:
             shutil.rmtree(root, ignore_errors=True)
@@ -926,7 +1246,8 @@ class TestRecorderLifecycle:
                 app.upload_and_transcribe(str(source))
 
             staged = Path(app._session.context.wav_path)
-            assert staged == recordings_dir / source.name
+            assert staged.parent == recordings_dir
+            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_recording_meeting\.wav", staged.name)
             assert staged.read_bytes() == b"wav-data"
             assert app._session.context.compressed_path == ""
             thread_cls.return_value.start.assert_called_once_with()

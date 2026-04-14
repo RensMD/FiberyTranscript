@@ -28,6 +28,14 @@ from config.keystore import get_key, keys_configured
 from config.settings import Settings
 from config.session import RecordingSession, SessionContext
 from transcription.formatter import format_diarized_transcript
+from utils.filename_utils import (
+    PLACEHOLDER_RECORDING_STEM_RE,
+    RECORDING_PREFIX_RE,
+    append_counter,
+    build_recording_stem,
+    sanitize_name,
+    truncate_stem_for_directory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -247,18 +255,212 @@ class FiberyTranscriptApp:
         except ValueError:
             return False
 
-    def _build_unique_recordings_path(self, file_path: Path, recordings_dir: Path) -> Path:
-        """Return a non-conflicting destination path inside recordings_dir."""
-        candidate = recordings_dir / file_path.name
+    def _get_meeting_name(self) -> str:
+        """Return sanitized meeting name or 'recording' as fallback."""
+        raw = getattr(self._validated_entity, "entity_name", "") or ""
+        return sanitize_name(raw) if raw.strip() else "recording"
+
+    def _build_unique_recordings_path(
+        self,
+        suffix: str,
+        recordings_dir: Path,
+        meeting_name: Optional[str] = None,
+        original_filename: Optional[str] = None,
+    ) -> Path:
+        """Return a non-conflicting destination path inside recordings_dir.
+
+        Naming convention:
+        - Recording:  yyyy-mm-dd_hh_mm_[meeting-name]_[#].ext
+        - Copy:       yyyy-mm-dd_hh_mm_[meeting-name]_[original-name]_[#].ext
+        - Copy with existing convention: reuse source stem, iterate #
+        """
+        name = meeting_name or "recording"
+
+        if original_filename:
+            orig_stem = Path(original_filename).stem
+            # If source already follows our date convention, reuse its stem as-is
+            if RECORDING_PREFIX_RE.match(orig_stem):
+                base_stem = orig_stem
+            else:
+                sanitized_orig = sanitize_name(orig_stem)
+                base_stem = f"{build_recording_stem(name)}_{sanitized_orig}"
+        else:
+            base_stem = build_recording_stem(name)
+
+        base_stem = truncate_stem_for_directory(base_stem, recordings_dir, suffix)
+
+        candidate = recordings_dir / f"{base_stem}{suffix}"
         if not candidate.exists():
             return candidate
 
         counter = 2
         while True:
-            candidate = recordings_dir / f"{file_path.stem}_{counter}{file_path.suffix}"
+            candidate = recordings_dir / f"{base_stem}_{counter}{suffix}"
             if not candidate.exists():
                 return candidate
             counter += 1
+
+    @staticmethod
+    def _recording_stem_with_counter(base_stem: str, counter: Optional[int]) -> str:
+        """Append a numeric suffix when one is required."""
+        return append_counter(base_stem, counter)
+
+    def _build_selected_entity_recording_stem(self, source_path: Path, meeting_name: str) -> tuple[str, Optional[int]] | None:
+        """Return the renamed base stem and preserved numeric suffix for placeholder recordings."""
+        match = PLACEHOLDER_RECORDING_STEM_RE.match(source_path.stem)
+        if not match:
+            return None
+
+        merged_prefix = match.group("merged") or ""
+        timestamp_prefix = match.group("prefix")
+        counter_text = match.group("counter")
+        preferred_counter = int(counter_text[1:]) if counter_text else None
+        base_stem = f"{merged_prefix}{timestamp_prefix}_{meeting_name}"
+        base_stem = truncate_stem_for_directory(base_stem, source_path.parent, source_path.suffix)
+        return base_stem, preferred_counter
+
+    def _recording_stem_is_available(
+        self,
+        directory: Path,
+        candidate_stem: str,
+        wav_source: Path,
+        ogg_source: Optional[Path],
+    ) -> bool:
+        """Return True when a shared WAV/OGG stem is free to use."""
+        files_to_check: list[tuple[str, Path]] = [(".wav", wav_source)]
+        if ogg_source is not None:
+            files_to_check.append((".ogg", ogg_source))
+
+        for suffix, source in files_to_check:
+            candidate = directory / f"{candidate_stem}{suffix}"
+            if candidate.exists() and candidate != source:
+                return False
+        return True
+
+    def _choose_selected_entity_recording_stem(
+        self,
+        wav_source: Path,
+        ogg_source: Optional[Path],
+        base_stem: str,
+        preferred_counter: Optional[int],
+    ) -> str:
+        """Pick a non-conflicting shared stem for renamed staged recording files."""
+        candidate_stem = self._recording_stem_with_counter(base_stem, preferred_counter)
+        if self._recording_stem_is_available(wav_source.parent, candidate_stem, wav_source, ogg_source):
+            return candidate_stem
+
+        counter = preferred_counter + 1 if preferred_counter is not None else 2
+        while True:
+            candidate_stem = f"{base_stem}_{counter}"
+            if self._recording_stem_is_available(wav_source.parent, candidate_stem, wav_source, ogg_source):
+                return candidate_stem
+            counter += 1
+
+    @staticmethod
+    def _rename_paths_with_rollback(rename_pairs: list[tuple[Path, Path]]) -> None:
+        """Rename files and roll back any earlier moves if a later move fails."""
+        renamed: list[tuple[Path, Path]] = []
+        try:
+            for source, target in rename_pairs:
+                if source == target:
+                    continue
+                source.rename(target)
+                renamed.append((target, source))
+        except OSError:
+            for current_path, original_path in reversed(renamed):
+                try:
+                    current_path.rename(original_path)
+                except OSError:
+                    logger.warning(
+                        "Failed to roll back renamed staged audio file %s -> %s",
+                        current_path,
+                        original_path,
+                    )
+            raise
+
+    def _refresh_staged_session_audio_paths(self, wav_path: str, compressed_path: str) -> None:
+        """Update the staged session paths while preserving the existing results object."""
+        if not self._session:
+            return
+
+        current_session = self._session
+        ctx = current_session.context
+        self._session = RecordingSession(SessionContext(
+            entity=ctx.entity,
+            fibery_client=ctx.fibery_client,
+            entity_context=ctx.entity_context,
+            wav_path=wav_path,
+            compressed_path=compressed_path,
+            is_uploaded_file=ctx.is_uploaded_file,
+        ))
+        self._session.results = current_session.results
+        self._prepared_audio_info = self._build_prepared_audio_info(
+            Path(wav_path),
+            ctx.is_uploaded_file,
+        )
+
+    def _rename_placeholder_recording_for_selected_entity(self) -> None:
+        """Rename staged recorded audio from the placeholder stem to the selected entity name."""
+        session = self._session
+        entity = self._validated_entity
+        if not session or session.context.is_uploaded_file or not entity:
+            return
+
+        wav_source = Path(session.context.wav_path)
+        if not wav_source.exists():
+            return
+
+        meeting_name = self._get_meeting_name()
+        stem_info = self._build_selected_entity_recording_stem(wav_source, meeting_name)
+        if not stem_info:
+            return
+
+        compressed_text = session.context.compressed_path or ""
+        compressed_source = Path(compressed_text) if compressed_text else None
+        raw_ogg_source = None
+        if (
+            compressed_source
+            and compressed_source.suffix.lower() == ".ogg"
+            and compressed_source.parent == wav_source.parent
+            and compressed_source.stem == wav_source.stem
+        ):
+            raw_ogg_source = compressed_source
+        else:
+            candidate_ogg = wav_source.with_suffix(".ogg")
+            if candidate_ogg.exists():
+                raw_ogg_source = candidate_ogg
+
+        base_stem, preferred_counter = stem_info
+        target_stem = self._choose_selected_entity_recording_stem(
+            wav_source,
+            raw_ogg_source,
+            base_stem,
+            preferred_counter,
+        )
+        target_wav = wav_source.parent / f"{target_stem}{wav_source.suffix}"
+        target_ogg = target_wav.with_suffix(".ogg") if (compressed_text or raw_ogg_source) else None
+        if target_wav == wav_source and (not raw_ogg_source or target_ogg == raw_ogg_source):
+            return
+
+        rename_pairs: list[tuple[Path, Path]] = []
+        if raw_ogg_source and target_ogg and raw_ogg_source.exists() and raw_ogg_source != target_ogg:
+            rename_pairs.append((raw_ogg_source, target_ogg))
+        if wav_source != target_wav:
+            rename_pairs.append((wav_source, target_wav))
+        if not rename_pairs:
+            return
+
+        try:
+            self._rename_paths_with_rollback(rename_pairs)
+        except OSError as e:
+            logger.warning("Could not rename staged recording for selected meeting: %s", e)
+            return
+
+        updated_compressed_path = compressed_text
+        if target_ogg and (compressed_text or raw_ogg_source):
+            updated_compressed_path = str(target_ogg)
+        self._refresh_staged_session_audio_paths(str(target_wav), updated_compressed_path)
+        logger.info("Renamed staged recording for selected meeting: %s -> %s", wav_source.name, target_wav.name)
 
     def _copy_uploaded_file_to_recordings(self, file_path: Path) -> Path:
         """Copy an imported file into the recordings folder when it lives elsewhere."""
@@ -273,7 +475,13 @@ class FiberyTranscriptApp:
 
         try:
             recordings_dir.mkdir(parents=True, exist_ok=True)
-            destination = self._build_unique_recordings_path(file_path, recordings_dir)
+            meeting_name = self._get_meeting_name()
+            destination = self._build_unique_recordings_path(
+                suffix=file_path.suffix,
+                recordings_dir=recordings_dir,
+                meeting_name=meeting_name,
+                original_filename=file_path.name,
+            )
             shutil.copy2(str(file_path), str(destination))
             logger.info("Copied uploaded audio to recordings folder: %s", destination.name)
             return destination
@@ -538,6 +746,7 @@ class FiberyTranscriptApp:
             noise_suppressor=ogg_noise_suppressor,
             agc=ogg_agc,
             channels=resolved_channels,
+            meeting_name=self._get_meeting_name(),
         )
         return self._recorder.start()
 
@@ -1608,6 +1817,8 @@ class FiberyTranscriptApp:
 
         if self.audio_capture.is_capturing():
             self.audio_capture.stop_capture()
+
+        self._rename_placeholder_recording_for_selected_entity()
 
         options = options or TranscriptionOptions()
         effective_recording_mode, recording_mode_auto_corrected, recording_mode_reason = (

@@ -12,13 +12,13 @@ import logging
 import queue
 import threading
 import wave
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
 from config.constants import SAMPLE_RATE
+from utils.filename_utils import build_recording_stem, truncate_stem_for_directory
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,14 @@ class WavRecorder:
         noise_suppressor=None,
         agc=None,
         channels: int = 2,
+        meeting_name: str = "",
     ):
         self._output_dir = output_dir
         self._sample_rate = sample_rate
         self._noise_suppressor = noise_suppressor
         self._agc = agc
         self._channels = channels
+        self._meeting_name = meeting_name
         self._wav_file: Optional[wave.Wave_write] = None
         self._ogg_file = None  # sf.SoundFile or None
         self._file_path: Optional[Path] = None
@@ -67,11 +69,24 @@ class WavRecorder:
         self._ogg_dropped_chunks: int = 0
         self._ogg_is_complete: bool = True
 
+    def _build_unique_path(self, base_stem: str, suffix: str) -> Path:
+        """Return a non-conflicting path in the output directory."""
+        safe_stem = truncate_stem_for_directory(base_stem, self._output_dir, suffix)
+        candidate = self._output_dir / f"{safe_stem}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter = 2
+        while True:
+            candidate = self._output_dir / f"{safe_stem}_{counter}{suffix}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
     def start(self) -> Path:
         """Start recording to a new WAV file. Returns the file path."""
         self._output_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:22]  # includes microseconds
-        self._file_path = self._output_dir / f"recording_{timestamp}.wav"
+        base_stem = build_recording_stem(self._meeting_name)
+        self._file_path = self._build_unique_path(base_stem, ".wav")
 
         self._wav_file = wave.open(str(self._file_path), "wb")
         self._wav_file.setnchannels(self._channels)

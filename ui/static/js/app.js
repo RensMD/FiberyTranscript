@@ -932,6 +932,11 @@ transcribeBtn.addEventListener('click', async () => {
             updateTranscribeButton();
             return;
         }
+        if (result.prepared_audio && result.prepared_audio.file_path) {
+            preparedAudio = result.prepared_audio;
+            selectedUploadPath = result.prepared_audio.file_path;
+            renderMainAudioCardState();
+        }
         if (result.transcript_mode) {
             syncTranscriptModeInputs(result.transcript_mode);
         }

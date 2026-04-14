@@ -41,6 +41,8 @@ def test_summary_actions_remain_available_during_post_transcription_upload():
     transcribe_end = app_js.index("function formatAudioFileInfo(info) {")
     transcribe_block = app_js[transcribe_start:transcribe_end]
     assert "hasCompletedTranscription = false;" in transcribe_block
+    assert "preparedAudio = result.prepared_audio;" in transcribe_block
+    assert "selectedUploadPath = result.prepared_audio.file_path;" in transcribe_block
 
     upload_success_start = app_js.index("window.onAudioUploadedToFibery = function() {")
     upload_success_end = app_js.index("window.onAudioUploadError = function(message) {")
