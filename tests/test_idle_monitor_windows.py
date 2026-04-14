@@ -63,6 +63,23 @@ def test_start_monitor_keeps_loopback_capture_off_windows():
     assert kwargs["loopback_device"] == loop
 
 
+def test_start_monitor_can_include_loopback_preview_on_windows():
+    app = _make_app()
+    app.audio_capture = MagicMock()
+    app.audio_capture.is_capturing.return_value = False
+
+    mic = _make_device(1, "Mic", is_loopback=False)
+    loop = _make_device(2, "Loop", is_loopback=True)
+    app._find_device = MagicMock(side_effect=[mic, loop])
+
+    with patch.object(sys, "platform", "win32"):
+        app.start_monitor(1, 2, include_loopback=True)
+
+    kwargs = app.audio_capture.start_capture.call_args.kwargs
+    assert kwargs["mic_device"] == mic
+    assert kwargs["loopback_device"] == loop
+
+
 def test_start_monitor_is_noop_when_same_devices_are_already_monitored():
     app = _make_app()
     app.audio_capture = MagicMock()
@@ -74,3 +91,43 @@ def test_start_monitor_is_noop_when_same_devices_are_already_monitored():
 
     app.audio_capture.stop_capture.assert_not_called()
     app.audio_capture.start_capture.assert_not_called()
+
+
+def test_start_monitor_restarts_when_loopback_preview_policy_changes():
+    app = _make_app()
+    app.audio_capture = MagicMock()
+    app.audio_capture.is_capturing.return_value = True
+    app._selected_mic_index = 1
+    app._selected_sys_index = 2
+    app._monitor_include_loopback = False
+
+    mic = _make_device(1, "Mic", is_loopback=False)
+    loop = _make_device(2, "Loop", is_loopback=True)
+    app._find_device = MagicMock(side_effect=[mic, loop])
+
+    with patch.object(sys, "platform", "win32"):
+        app.start_monitor(1, 2, include_loopback=True)
+
+    app.audio_capture.stop_capture.assert_called_once_with()
+    kwargs = app.audio_capture.start_capture.call_args.kwargs
+    assert kwargs["mic_device"] == mic
+    assert kwargs["loopback_device"] == loop
+
+
+def test_stop_monitor_resets_cached_levels_and_notifies_zeroes():
+    app = _make_app()
+    app.audio_capture = MagicMock()
+    app.audio_capture.is_capturing.return_value = False
+    app._notify_js = MagicMock()
+    app._last_mic_level = 0.5
+    app._last_raw_mic_level = 0.4
+    app._last_sys_level = 0.7
+
+    app.stop_monitor()
+
+    assert app._last_mic_level == 0.0
+    assert app._last_raw_mic_level == 0.0
+    assert app._last_sys_level == 0.0
+    app._notify_js.assert_called_once_with(
+        "window.updateAudioLevels && window.updateAudioLevels(0.0, 0.0)"
+    )

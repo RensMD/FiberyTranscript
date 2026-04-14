@@ -20,6 +20,7 @@ def sanitize_name(name: str) -> str:
     name = name.strip().replace(" ", "-")
     name = re.sub(r"[^\w\-.]", "", name)
     name = re.sub(r"[-_]{2,}", "-", name)
+    name = name.strip("-_.")
     return name or "recording"
 
 

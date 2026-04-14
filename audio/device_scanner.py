@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Set
 import numpy as np
 import sounddevice as sd
 
-from audio.capture import AudioDevice
+from audio.capture import AudioDevice, suppress_portaudio_output
 from audio.level_monitor import calculate_rms
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,8 @@ def _scan_loopbacks_wasapi(
     results: Dict[int, float] = {}  # device_index -> peak_rms
     streams = []
 
-    p = pyaudio.PyAudio()
+    with suppress_portaudio_output():
+        p = pyaudio.PyAudio()
     try:
         for device in devices:
             if cancel and cancel.is_set():

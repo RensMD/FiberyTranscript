@@ -152,8 +152,10 @@ class FiberyTranscriptApp:
         self._silence_counter_sys: int = 0
         self._selected_mic_index: Optional[int] = None
         self._selected_sys_index: Optional[int] = None
+        self._monitor_include_loopback: bool = False
         # Periodic idle rescans are disabled in favor of explicit one-shot
-        # auto-detect runs from the UI (startup, meeting selection, manual refresh).
+        # auto-detect runs from the UI when the Recording tab becomes active
+        # or the user manually refreshes devices there.
         self._background_scanning_enabled: bool = False
         self._tray_quit_requested = False
         self._batch_thread: Optional[threading.Thread] = None
@@ -283,7 +285,14 @@ class FiberyTranscriptApp:
                 base_stem = orig_stem
             else:
                 sanitized_orig = sanitize_name(orig_stem)
-                base_stem = f"{build_recording_stem(name)}_{sanitized_orig}"
+                # When no meeting is selected the fallback name is "recording".
+                # Skip it from the stem to avoid "recording_recording_..." when
+                # the original filename already starts with "recording".
+                if name == "recording" and sanitized_orig.startswith("recording"):
+                    from datetime import datetime
+                    base_stem = f"{datetime.now().strftime('%Y%m%d_%H%M')}_{sanitized_orig}"
+                else:
+                    base_stem = f"{build_recording_stem(name)}_{sanitized_orig}"
         else:
             base_stem = build_recording_stem(name)
 
@@ -1151,7 +1160,25 @@ class FiberyTranscriptApp:
         """Whether idle monitoring/scanning may touch the loopback device."""
         return sys.platform != "win32"
 
-    def start_monitor(self, mic_index: Optional[int], loopback_index: Optional[int]) -> None:
+    def _should_include_idle_loopback_capture(self, include_loopback: bool) -> bool:
+        """Whether idle monitoring should open the selected loopback device."""
+        return include_loopback or self._allow_idle_loopback_capture()
+
+    def _reset_level_state(self, *, notify_js: bool = False) -> None:
+        """Clear cached audio levels so the UI does not retain stale activity."""
+        self._last_mic_level = 0.0
+        self._last_raw_mic_level = 0.0
+        self._last_sys_level = 0.0
+        self._last_level_push = 0.0
+        if notify_js:
+            self._notify_js("window.updateAudioLevels && window.updateAudioLevels(0.0, 0.0)")
+
+    def start_monitor(
+        self,
+        mic_index: Optional[int],
+        loopback_index: Optional[int],
+        include_loopback: bool = False,
+    ) -> None:
         """Start audio level monitoring without recording."""
         with self._audio_lifecycle_lock:
             if self.state in (self.STATE_RECORDING, self.STATE_PROCESSING):
@@ -1163,15 +1190,21 @@ class FiberyTranscriptApp:
             # No-op when idle monitoring is already running on the same devices.
             # This avoids needless stop/start churn and noisy warnings when UI
             # flows reassert the current selection.
-            if self.audio_capture.is_capturing() and requested_selection == current_selection:
+            if (
+                self.audio_capture.is_capturing()
+                and requested_selection == current_selection
+                and include_loopback == self._monitor_include_loopback
+            ):
                 self._selected_mic_index = mic_index
                 self._selected_sys_index = loopback_index
                 self._silence_counter_mic = 0
                 self._silence_counter_sys = 0
                 logger.debug(
-                    "Level monitoring already active for current devices (mic=%s, loopback=%s)",
+                    "Level monitoring already active for current devices (mic=%s, loopback=%s, "
+                    "include_loopback=%s)",
                     mic_index,
                     loopback_index,
+                    include_loopback,
                 )
                 return
 
@@ -1179,11 +1212,12 @@ class FiberyTranscriptApp:
             if self.audio_capture.is_capturing():
                 logger.info(
                     "Level monitoring switching devices (old_mic=%s, old_loopback=%s, "
-                    "new_mic=%s, new_loopback=%s)",
+                    "new_mic=%s, new_loopback=%s, include_loopback=%s)",
                     self._selected_mic_index,
                     self._selected_sys_index,
                     mic_index,
                     loopback_index,
+                    include_loopback,
                 )
                 self.audio_capture.stop_capture()
 
@@ -1193,10 +1227,11 @@ class FiberyTranscriptApp:
             # Track selected devices for background scanner
             self._selected_mic_index = mic_index
             self._selected_sys_index = loopback_index
+            self._monitor_include_loopback = include_loopback
             self._silence_counter_mic = 0
             self._silence_counter_sys = 0
 
-            if loopback_device and not self._allow_idle_loopback_capture():
+            if loopback_device and not self._should_include_idle_loopback_capture(include_loopback):
                 logger.info(
                     "Idle monitoring on Windows skips loopback capture for %s to avoid playback glitches",
                     loopback_device.name,
@@ -1205,6 +1240,7 @@ class FiberyTranscriptApp:
                 self._last_sys_level = 0.0
 
             if not mic_device and not loopback_device:
+                self._reset_level_state(notify_js=True)
                 return
 
             # Skip noise suppression during idle monitoring to save CPU
@@ -1217,15 +1253,23 @@ class FiberyTranscriptApp:
                 on_level_update=self._on_level_update,
                 noise_suppressor=None,
             )
-            logger.info("Level monitoring started (mic=%s, loopback=%s)",
-                         mic_device and mic_device.name, loopback_device and loopback_device.name)
+            logger.info(
+                "Level monitoring started (mic=%s, loopback=%s, include_loopback=%s)",
+                mic_device and mic_device.name,
+                loopback_device and loopback_device.name,
+                include_loopback,
+            )
 
     def stop_monitor(self) -> None:
         """Stop audio level monitoring."""
         with self._audio_lifecycle_lock:
-            if self.state != self.STATE_RECORDING and self.audio_capture.is_capturing():
+            if self.state == self.STATE_RECORDING:
+                return
+            if self.audio_capture.is_capturing():
                 self.audio_capture.stop_capture()
                 logger.info("Level monitoring stopped")
+            self._monitor_include_loopback = False
+            self._reset_level_state(notify_js=True)
 
     # --- Device Scanning ---
 
@@ -1280,11 +1324,12 @@ class FiberyTranscriptApp:
     def stop_background_scanning(self) -> None:
         """Stop periodic background device scanning and wait for any in-progress scan."""
         self._scan_stop_event.set()
-        if self._scan_thread:
-            # Wait long enough for an in-progress scan to finish (~1.5s worst case)
-            self._scan_thread.join(timeout=5.0)
+        thread = self._scan_thread
+        if thread:
             self._scan_thread = None
-        logger.info("Background device scanning stopped")
+            # Wait long enough for an in-progress scan to finish (~1.5s worst case)
+            thread.join(timeout=5.0)
+            logger.info("Background device scanning stopped")
 
     def _resume_background_scanning(self) -> None:
         """Ensure idle device scanning is running after recording/processing ends."""

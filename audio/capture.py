@@ -1,8 +1,38 @@
 """Abstract audio capture interface and platform factory."""
 
+import os
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Callable, List, Optional
+
+
+@contextmanager
+def suppress_portaudio_output():
+    """Redirect C-level stdout/stderr to devnull during PortAudio init.
+
+    PyAudio (PortAudio) prints device names and internal IDs directly to
+    the C stdout/stderr file descriptors during Pa_Initialize. Python-level
+    sys.stdout redirection does not intercept these. We dup the real fds
+    to devnull for the duration of the block.
+    """
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        yield
+        return
+    old_stdout_fd = os.dup(1)
+    old_stderr_fd = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        os.dup2(old_stdout_fd, 1)
+        os.dup2(old_stderr_fd, 2)
+        os.close(devnull_fd)
+        os.close(old_stdout_fd)
+        os.close(old_stderr_fd)
 
 
 @dataclass

@@ -47,6 +47,22 @@ def test_start_transcription_forwards_recording_mode():
     assert captured["options"].recording_mode == "mic_and_speakers"
 
 
+def test_start_monitor_forwards_loopback_preview_flag():
+    app = SimpleNamespace()
+    captured = {}
+
+    def _start_monitor(mic_index, loopback_index, include_loopback=False):
+        captured["args"] = (mic_index, loopback_index, include_loopback)
+
+    app.start_monitor = _start_monitor
+    bridge = ApiBridge(app)
+
+    result = bridge.start_monitor(1, 2, True)
+
+    assert result == {"success": True}
+    assert captured["args"] == (1, 2, True)
+
+
 def test_generate_summary_forwards_summary_language(monkeypatch):
     notifications = []
     app = SimpleNamespace()

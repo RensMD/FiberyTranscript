@@ -971,7 +971,20 @@ class FiberyClient:
                     if isinstance(s, dict) and s.get("Market/Name")
                 ]
         except Exception as e:
-            logger.warning("Failed to fetch segments for entity %s: %s", entity.uuid, e)
+            detail = str(e)
+            # requests.HTTPError may carry the response body with more context
+            resp_obj = getattr(e, "response", None)
+            if resp_obj is not None:
+                try:
+                    detail = f"HTTP {resp_obj.status_code}: {resp_obj.text[:200]}"
+                except Exception:
+                    detail = f"HTTP {getattr(resp_obj, 'status_code', '?')}"
+            logger.warning(
+                "Failed to fetch segments for entity %s: [%s] %s",
+                entity.uuid,
+                type(e).__name__,
+                detail,
+            )
         return []
 
     def create_problem_entity(self, interview_entity: FiberyEntity, problem_data: dict) -> FiberyEntity:

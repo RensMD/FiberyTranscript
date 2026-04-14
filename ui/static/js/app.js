@@ -103,6 +103,7 @@ let undoSnapshotVersion = 0;
 let stagedAudioCardMode = 'idle';
 let stagedAudioCardName = '';
 let stagedAudioCardMeta = '';
+let audioPreviewSyncToken = 0;
 
 // --- DOM elements ---
 const mainTab = document.getElementById('mainTab');
@@ -203,6 +204,7 @@ function clearFinalizeTimers() {
 }
 
 function setActiveTab(tab, { force = false } = {}) {
+    const previousTab = activeTab;
     if (!force && isRecording && tab !== 'recording') {
         activeTab = 'recording';
     } else {
@@ -215,7 +217,71 @@ function setActiveTab(tab, { force = false } = {}) {
     recordingTab.classList.toggle('active', activeTab === 'recording');
     mainTab.setAttribute('aria-selected', activeTab === 'main' ? 'true' : 'false');
     recordingTab.setAttribute('aria-selected', activeTab === 'recording' ? 'true' : 'false');
+    if (previousTab !== activeTab) {
+        scheduleAudioPreviewReconcile({
+            refreshDevices: activeTab === 'recording',
+            autoSelectActive: activeTab === 'recording',
+        });
+    }
     return activeTab === tab;
+}
+
+function shouldRunRecordingTabPreview(token) {
+    return (
+        token === audioPreviewSyncToken
+        && activeTab === 'recording'
+        && !isRecording
+        && !finalizeInProgress
+        && !transcriptionInProgress
+    );
+}
+
+function scheduleAudioPreviewReconcile(options = {}) {
+    reconcileAudioPreviewState(options).catch((err) => {
+        console.warn('Failed to reconcile audio preview state:', err);
+    });
+}
+
+async function reconcileAudioPreviewState({ refreshDevices = false, autoSelectActive = false } = {}) {
+    const token = ++audioPreviewSyncToken;
+
+    try {
+        await callApi('stop_monitor');
+    } catch (err) {
+        console.warn('Failed to stop idle monitoring:', err);
+    }
+
+    if (token !== audioPreviewSyncToken) return;
+
+    if (!shouldRunRecordingTabPreview(token)) {
+        window.resetAudioLevels && window.resetAudioLevels();
+        return;
+    }
+
+    if (refreshDevices) {
+        await refreshDeviceList({ reinitializeBackends: true, preserveSelection: true });
+    }
+
+    if (token !== audioPreviewSyncToken || !shouldRunRecordingTabPreview(token)) return;
+
+    if (autoSelectActive) {
+        await autoSelectDevices();
+    }
+
+    if (token !== audioPreviewSyncToken || !shouldRunRecordingTabPreview(token)) return;
+
+    await startMonitoring({ includeLoopback: true });
+
+    if (token !== audioPreviewSyncToken) return;
+
+    if (!shouldRunRecordingTabPreview(token)) {
+        try {
+            await callApi('stop_monitor');
+        } catch (err) {
+            console.warn('Failed to stop superseded idle monitoring:', err);
+        }
+        window.resetAudioLevels && window.resetAudioLevels();
+    }
 }
 
 function syncTabLockState() {
@@ -374,14 +440,12 @@ function finalizeRecordingToMain(info) {
         stagedAudioCardMode = 'idle';
         clearPreparedAudioUi();
         setStatus('', '');
-        startMonitoring();
     }
 
     updateCreateMeetingButtons();
     updateTranscribeButton();
     applySummarizeButtonState();
     syncTabLockState();
-    startMonitoring();
 }
 
 async function reconcileUiWithBackendState(snapshot) {
@@ -518,8 +582,6 @@ window.addEventListener('pywebviewready', async () => {
 async function initApp() {
     setActiveTab('main', { force: true });
     syncTabLockState();
-    await loadDevices();
-    await autoDetectDevicesOnce();
     try {
         await reconcileUiWithBackendState(await fetchSessionSnapshot());
     } catch (err) {
@@ -598,15 +660,6 @@ function populateDeviceOptions(devices) {
     if (devices.loopbacks.length > 0) loopbackSelect.value = devices.loopbacks[0].index;
 }
 
-async function loadDevices() {
-    try {
-        const devices = await window.pywebview.api.get_audio_devices();
-        populateDeviceOptions(devices);
-    } catch (err) {
-        console.error('Failed to load devices:', err);
-    }
-}
-
 async function refreshDeviceList({ reinitializeBackends = false, preserveSelection = true } = {}) {
     if (isRecording || transcriptionInProgress || finalizeInProgress) {
         return false;
@@ -674,17 +727,6 @@ async function autoSelectDevices() {
     } catch (err) {
         console.warn('Device auto-detection failed, using defaults:', err);
     }
-}
-
-async function autoDetectDevicesOnce({ refreshDevices = false } = {}) {
-    if (isRecording || transcriptionInProgress || finalizeInProgress) return;
-
-    if (refreshDevices) {
-        await refreshDeviceList({ reinitializeBackends: true, preserveSelection: true });
-    }
-
-    await autoSelectDevices();
-    await startMonitoring();
 }
 
 async function loadSettings() {
@@ -925,7 +967,6 @@ clearStagedAudioBtn.addEventListener('click', async () => {
     clearPreparedAudioUi();
     setAudioSourceToolsHidden(false);
     setStatus('', '');
-    startMonitoring();
     updateSummaryActionsState();
 });
 
@@ -1079,22 +1120,30 @@ window.onHealthWarning = function(message) {
 };
 
 // === Level Monitoring ===
-async function startMonitoring() {
-    if (isRecording || finalizeInProgress) return;
+async function startMonitoring({ includeLoopback = false } = {}) {
+    if (isRecording || finalizeInProgress || activeTab !== 'recording') return;
     const micIdx = micSelect.value !== '' ? parseInt(micSelect.value) : null;
     const loopIdx = loopbackSelect.value !== '' ? parseInt(loopbackSelect.value) : null;
-    if (micIdx !== null || loopIdx !== null) {
-        await window.pywebview.api.start_monitor(micIdx, loopIdx);
+    if (micIdx === null && loopIdx === null) {
+        window.resetAudioLevels && window.resetAudioLevels();
+        return;
     }
+    await callApi('start_monitor', micIdx, loopIdx, includeLoopback);
 }
 
 micSelect.addEventListener('change', () => {
     micSelect.classList.remove('device-warning-red', 'device-warning-yellow');
-    isRecording ? switchSources() : startMonitoring();
+    if (activeTab !== 'recording') return;
+    isRecording
+        ? switchSources()
+        : scheduleAudioPreviewReconcile({ refreshDevices: false, autoSelectActive: false });
 });
 loopbackSelect.addEventListener('change', () => {
     loopbackSelect.classList.remove('device-warning-red', 'device-warning-yellow');
-    isRecording ? switchSources() : startMonitoring();
+    if (activeTab !== 'recording') return;
+    isRecording
+        ? switchSources()
+        : scheduleAudioPreviewReconcile({ refreshDevices: false, autoSelectActive: false });
 });
 
 async function switchSources() {
@@ -1124,7 +1173,7 @@ refreshDevicesBtn.addEventListener('click', async () => {
     refreshDevicesBtn.disabled = true;
     refreshDevicesBtn.classList.add('spinning');
     try {
-        await autoDetectDevicesOnce({ refreshDevices: true });
+        await reconcileAudioPreviewState({ refreshDevices: true, autoSelectActive: true });
     } catch (err) {
         console.error('Failed to refresh devices:', err);
     } finally {
@@ -1355,8 +1404,6 @@ async function selectMeetingFromPanel() {
                 }
             }
 
-            await autoDetectDevicesOnce();
-
         } else if (result.needs_disambiguation) {
             fiberyDisambiguation.classList.remove('hidden');
             disambigOptions.innerHTML = '';
@@ -1427,7 +1474,6 @@ async function createMeeting(meetingType) {
                 showToast(result.warning, 'warning', 8000);
             }
 
-            await autoDetectDevicesOnce();
         } else {
             setFiberyValidateStatus('Error: ' + result.error, 'error');
         }
@@ -1577,7 +1623,6 @@ function restoreFrontendWorkflowSnapshot(snapshot) {
     setWorkflowControlsDisabled(false);
     setActiveTab('main', { force: true });
     syncTabLockState();
-    startMonitoring();
 }
 
 function showUndoReplaceToast() {
@@ -1698,6 +1743,10 @@ function resetWorkflowUiState({ keepMeeting = false } = {}) {
     updateCreateMeetingButtons();
     renderMainAudioCardState();
     syncTabLockState();
+    scheduleAudioPreviewReconcile({
+        refreshDevices: activeTab === 'recording',
+        autoSelectActive: activeTab === 'recording',
+    });
 }
 
 async function resetSession() {
@@ -1797,8 +1846,9 @@ async function startRecording() {
     }
 
     // Update UI immediately so the button feels responsive
-    setActiveTab('recording', { force: true });
+    audioPreviewSyncToken += 1;
     isRecording = true;
+    setActiveTab('recording', { force: true });
     setStatus('recording', 'Recording');
     audioHealthEl.classList.remove('hidden');
     syncTabLockState();
@@ -1836,6 +1886,7 @@ async function startRecording() {
                     uploadCollapsible.classList.remove('collapsed');
                     audioStorageCollapsible.classList.add('collapsed');
                     syncTabLockState();
+                    scheduleAudioPreviewReconcile({ refreshDevices: false, autoSelectActive: false });
                     return;
                 }
             }
@@ -1851,6 +1902,7 @@ async function startRecording() {
             sendPanelCollapsible.classList.add('collapsed');
             showToast('Could not acquire recording lock: ' + err, 'error');
             syncTabLockState();
+            scheduleAudioPreviewReconcile({ refreshDevices: false, autoSelectActive: false });
             return;
         }
     }
@@ -1872,6 +1924,7 @@ async function startRecording() {
         sendPanelCollapsible.classList.add('collapsed');
         audioStorageCollapsible.classList.add('collapsed');
         syncTabLockState();
+        scheduleAudioPreviewReconcile({ refreshDevices: false, autoSelectActive: false });
         // Release lock if we acquired one
         try { await callApi('release_recording_lock'); } catch (_) {}
     }
@@ -1996,10 +2049,6 @@ window.onProcessingComplete = function() {
         showToast('No speech detected in the recording.', 'warning', 8000);
     }
 
-    // Safe to resume level monitoring now that batch processing is done.
-    // The background scanner keeps running and will resume its idle checks.
-    startMonitoring();
-
     // Reset upload state but keep section hidden until "New meeting" reset
     clearStagedAudioBtn.disabled = false;
     clearStagedAudioBtn.classList.add('hidden');
@@ -2033,8 +2082,6 @@ window.onBatchFailed = function(info) {
         showToast('Transcription failed. Your recording was saved — click Retry to try again.', 'info', 10000);
         retryBatchBtn.style.display = '';
     }
-    // Resume idle monitoring
-    startMonitoring();
 };
 
 // === Decision Popup (silence/sleep) ===

@@ -46,10 +46,15 @@ class ApiBridge:
 
     # --- Level Monitoring ---
 
-    def start_monitor(self, mic_index: Optional[int] = None, loopback_index: Optional[int] = None) -> dict:
+    def start_monitor(
+        self,
+        mic_index: Optional[int] = None,
+        loopback_index: Optional[int] = None,
+        include_loopback: bool = False,
+    ) -> dict:
         """Start audio level monitoring (no recording)."""
         try:
-            self._app.start_monitor(mic_index, loopback_index)
+            self._app.start_monitor(mic_index, loopback_index, include_loopback=include_loopback)
             return {"success": True}
         except Exception as e:
             logger.error("Failed to start monitor: %s", e)

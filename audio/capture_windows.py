@@ -9,7 +9,7 @@ from typing import Callable, List, Optional
 import numpy as np
 import sounddevice as sd
 
-from audio.capture import AudioCapture, AudioDevice
+from audio.capture import AudioCapture, AudioDevice, suppress_portaudio_output
 from audio.level_monitor import calculate_rms
 from config.constants import CHUNK_SAMPLES, SAMPLE_RATE
 
@@ -127,7 +127,8 @@ class WindowsAudioCapture(AudioCapture):
         devices = []
         try:
             import pyaudiowpatch as pyaudio
-            p = pyaudio.PyAudio()
+            with suppress_portaudio_output():
+                p = pyaudio.PyAudio()
             try:
                 wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
                 for i in range(p.get_device_count()):
@@ -160,7 +161,8 @@ class WindowsAudioCapture(AudioCapture):
         """Fallback method to find loopback device from default output."""
         import pyaudiowpatch as pyaudio
         devices = []
-        p = pyaudio.PyAudio()
+        with suppress_portaudio_output():
+            p = pyaudio.PyAudio()
         try:
             default_output = p.get_default_wasapi_loopback()
             if default_output:
@@ -257,7 +259,8 @@ class WindowsAudioCapture(AudioCapture):
         """
         import pyaudiowpatch as pyaudio
 
-        p = pyaudio.PyAudio()
+        with suppress_portaudio_output():
+            p = pyaudio.PyAudio()
         self._pyaudio_instance = p
         watchdog: _LoopbackStallWatchdog | None = None
         native_rate = 0

@@ -192,3 +192,44 @@ def test_problem_generation_enablement_rechecks_fibery_after_summary_writes():
     pending_end = app_js.index("window.onPendingSummarySendError = function(message) {")
     pending_block = app_js[pending_start:pending_end]
     assert "refreshProblemsReadyState();" in pending_block
+
+
+def test_recording_tab_owns_idle_audio_preview_lifecycle():
+    app_js = (PROJECT_ROOT / "ui" / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    bridge_py = (PROJECT_ROOT / "ui" / "api_bridge.py").read_text(encoding="utf-8")
+
+    assert "function reconcileAudioPreviewState(" in app_js
+    assert "function scheduleAudioPreviewReconcile(" in app_js
+    assert "await callApi('stop_monitor');" in app_js
+    assert "await startMonitoring({ includeLoopback: true });" in app_js
+    assert "setAudioSourceToolsHidden(false);" in app_js
+    assert "await loadDevices();" not in app_js
+
+    set_tab_start = app_js.index("function setActiveTab(tab, { force = false } = {}) {")
+    set_tab_end = app_js.index("function shouldRunRecordingTabPreview(")
+    set_tab_block = app_js[set_tab_start:set_tab_end]
+    assert "scheduleAudioPreviewReconcile({" in set_tab_block
+    assert "refreshDevices: activeTab === 'recording'" in set_tab_block
+
+    init_start = app_js.index("async function initApp() {")
+    init_end = app_js.index("// === API Key Setup ===")
+    init_block = app_js[init_start:init_end]
+    assert "await autoDetectDevicesOnce();" not in init_block
+    assert "await loadDevices();" not in init_block
+
+    refresh_start = app_js.index("refreshDevicesBtn.addEventListener('click', async () => {")
+    refresh_end = app_js.index("// === Step 1: Fibery Meeting Selection ===")
+    refresh_block = app_js[refresh_start:refresh_end]
+    assert "await reconcileAudioPreviewState({ refreshDevices: true, autoSelectActive: true });" in refresh_block
+
+    select_start = app_js.index("async function selectMeetingFromPanel() {")
+    select_end = app_js.index("// === Create Meeting ===")
+    select_block = app_js[select_start:select_end]
+    assert "await autoDetectDevicesOnce();" not in select_block
+
+    create_start = app_js.index("async function createMeeting(meetingType) {")
+    create_end = app_js.index("function resetFiberyValidation() {")
+    create_block = app_js[create_start:create_end]
+    assert "await autoDetectDevicesOnce();" not in create_block
+
+    assert "include_loopback: bool = False" in bridge_py

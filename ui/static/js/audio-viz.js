@@ -34,6 +34,13 @@ class AudioVisualizer {
         }
     }
 
+    reset() {
+        this.currentLevel = 0;
+        this.targetLevel = 0;
+        this.animating = false;
+        this._draw();
+    }
+
     _animate() {
         // Smooth interpolation toward target
         const diff = this.targetLevel - this.currentLevel;
@@ -107,4 +114,9 @@ window.sysViz = new AudioVisualizer('sysLevelCanvas');
 window.updateAudioLevels = function(micLevel, sysLevel) {
     if (micLevel >= 0) window.micViz.setLevel(micLevel);
     if (sysLevel >= 0) window.sysViz.setLevel(sysLevel);
+};
+
+window.resetAudioLevels = function() {
+    window.micViz.reset();
+    window.sysViz.reset();
 };
