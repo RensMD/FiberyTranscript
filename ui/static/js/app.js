@@ -185,6 +185,7 @@ const retryAudioUploadBtn = document.getElementById('retryAudioUploadBtn');
 const problemsRow = document.getElementById('problemsRow');
 const generateProblemsBtn = document.getElementById('generateProblemsBtn');
 const generateProblemsBtnLabel = document.getElementById('generateProblemsBtnLabel');
+const refreshProblemsBtn = document.getElementById('refreshProblemsBtn');
 const problemsStatus = document.getElementById('problemsStatus');
 const meetingCreateButtons = Array.from(document.querySelectorAll('.create-meeting-btn'));
 const workflowRadioInputs = Array.from(document.querySelectorAll(
@@ -1122,11 +1123,7 @@ window.onPanelUrlChanged = function(url) {
 function updateCreateMeetingButtons() {
     const hasName = createMeetingName.value.trim().length > 0;
     document.querySelectorAll('.create-meeting-btn').forEach((button) => {
-        if (button.dataset.type === 'interview') {
-            button.disabled = false;
-        } else {
-            button.disabled = !hasName;
-        }
+        button.disabled = !hasName;
     });
 }
 
@@ -1375,8 +1372,7 @@ async function createMeeting(meetingType) {
     try {
         setFiberyValidateStatus('Creating meeting...', '');
         const meetingName = createMeetingName.value.trim();
-        const createName = meetingType === 'interview' && !meetingName ? '-' : meetingName;
-        const result = await window.pywebview.api.create_fibery_meeting(meetingType, createName);
+        const result = await window.pywebview.api.create_fibery_meeting(meetingType, meetingName);
         if (result.success) {
             applyLinkedEntity(result, result.url || '');
 
@@ -2189,6 +2185,10 @@ window.onTranscriptSentToFibery = function() {
     applyTranscriptMode('replace');
     updateTranscribeButton();
     retryTranscriptBtn.style.display = 'none';
+    // Transcript now exists in Fibery — enable Generate Problems for Market Interviews
+    if (currentEntityDb === 'Market Interview') {
+        generateProblemsBtn.disabled = false;
+    }
 };
 
 window.onFiberyAssigneeWarning = function(message) {
@@ -2257,6 +2257,7 @@ window.onSummarizeComplete = function(result) {
 
     if (result && result.sent_to_fibery) {
         setFiberyStatus('Updated in Fibery', 'success');
+        refreshProblemsReadyState();
     } else if (result && result.fibery_error) {
         setFiberyStatus('Summary ready — Fibery error: ' + result.fibery_error, 'error');
     } else {
@@ -2277,6 +2278,7 @@ window.onSummarizeError = function(message) {
 // === Pending summary sent after link was added ===
 window.onPendingSummarySent = function() {
     setFiberyStatus('Updated in Fibery', 'success');
+    refreshProblemsReadyState();
 };
 
 window.onPendingSummarySendError = function(message) {
@@ -2315,6 +2317,40 @@ function stopProblemsProgressTimer() {
     }
 }
 
+async function refreshProblemsReadyState({ showEmptyWarning = false, spinButton = false } = {}) {
+    if (currentEntityDb !== 'Market Interview') {
+        return null;
+    }
+
+    if (spinButton) {
+        refreshProblemsBtn.classList.add('spinning');
+        refreshProblemsBtn.disabled = true;
+    }
+
+    try {
+        const result = await callApi('check_problems_ready');
+        const ready = Boolean(result.has_notes || result.has_transcript);
+        if (!problemsInProgress) {
+            generateProblemsBtn.disabled = !ready;
+        }
+        if (!ready && showEmptyWarning) {
+            showToast('No notes or transcript found in Fibery for this interview.', 'warning');
+        }
+        return result;
+    } catch (err) {
+        if (!problemsInProgress) {
+            generateProblemsBtn.disabled = true;
+        }
+        showToast('Error checking Fibery: ' + err, 'error');
+        return null;
+    } finally {
+        if (spinButton) {
+            refreshProblemsBtn.classList.remove('spinning');
+            refreshProblemsBtn.disabled = false;
+        }
+    }
+}
+
 generateProblemsBtn.addEventListener('click', async () => {
     if (problemsInProgress) return;
     problemsInProgress = true;
@@ -2333,6 +2369,10 @@ generateProblemsBtn.addEventListener('click', async () => {
         stopProblemsProgressTimer();
         showToast('Error: ' + err, 'error');
     }
+});
+
+refreshProblemsBtn.addEventListener('click', async () => {
+    await refreshProblemsReadyState({ showEmptyWarning: true, spinButton: true });
 });
 
 window.onProblemsComplete = function(result) {

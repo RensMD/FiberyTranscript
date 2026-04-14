@@ -627,6 +627,10 @@ class ApiBridge:
         threading.Thread(target=_background, daemon=True).start()
         return {"success": True, "message": "Processing in background"}
 
+    def check_problems_ready(self) -> dict:
+        """Re-check Fibery for notes/transcript on the current Market Interview entity."""
+        return self._app.check_problems_ready()
+
     def generate_problems(self) -> dict:
         """Extract problems from the linked Market Interview and create them in Fibery (runs in background).
 

@@ -3048,9 +3048,6 @@ class FiberyTranscriptApp:
 
         type_info = self.MEETING_TYPES[meeting_type]
 
-        if meeting_type == 'interview' and not name:
-            name = '-'
-
         if not name:
             return {'success': False, 'error': 'Meeting name is required'}
 
@@ -3443,6 +3440,33 @@ class FiberyTranscriptApp:
                 session_results.finish_summary_send(success=False)
             logger.error("Fibery summarize workflow failed: %s", e)
             return {"success": False, "error": _friendly_error(e)}
+
+    def check_problems_ready(self) -> dict:
+        """Re-check Fibery for notes/transcript on the current Market Interview entity."""
+        entity = self._validated_entity
+        client = self._fibery_client
+        if not entity or entity.database.lower() != "market interview":
+            return {"success": False, "error": "No Market Interview linked"}
+        if not client:
+            return {"success": False, "error": "No Fibery client available"}
+        has_notes = False
+        has_transcript = False
+        errors: list[str] = []
+        try:
+            transcript = client.get_entity_transcript(entity) or ""
+            has_transcript = bool(transcript.strip())
+        except Exception as exc:
+            logger.warning("check_problems_ready: transcript fetch failed: %s", exc)
+            errors.append(f"Could not fetch transcript from Fibery: {_friendly_error(exc)}")
+        try:
+            notes = client.get_entity_notes(entity) or ""
+            has_notes = bool(notes.strip())
+        except Exception as exc:
+            logger.warning("check_problems_ready: notes fetch failed: %s", exc)
+            errors.append(f"Could not fetch notes from Fibery: {_friendly_error(exc)}")
+        if errors and not (has_notes or has_transcript):
+            return {"success": False, "error": " ".join(errors)}
+        return {"success": True, "has_notes": has_notes, "has_transcript": has_transcript}
 
     def generate_problems(self) -> dict:
         """Extract structured problems from a linked Market Interview and create them in Fibery.

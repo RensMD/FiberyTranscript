@@ -159,3 +159,20 @@ def test_summarize_button_shows_elapsed_progress_during_long_requests():
     assert "Summarizing (${mins}m ${secs}s)..." in app_js
     assert "startSummarizeProgressTimer();" in app_js
     assert app_js.count("stopSummarizeProgressTimer();") >= 3
+
+
+def test_problem_generation_enablement_rechecks_fibery_after_summary_writes():
+    app_js = (PROJECT_ROOT / "ui" / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    assert "async function refreshProblemsReadyState(" in app_js
+    assert "const result = await callApi('check_problems_ready');" in app_js
+
+    summary_start = app_js.index("window.onSummarizeComplete = function(result) {")
+    summary_end = app_js.index("// === Pending summary sent after link was added ===")
+    summary_block = app_js[summary_start:summary_end]
+    assert "refreshProblemsReadyState();" in summary_block
+
+    pending_start = app_js.index("window.onPendingSummarySent = function() {")
+    pending_end = app_js.index("window.onPendingSummarySendError = function(message) {")
+    pending_block = app_js[pending_start:pending_end]
+    assert "refreshProblemsReadyState();" in pending_block

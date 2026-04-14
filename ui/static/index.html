@@ -78,7 +78,7 @@
                     <div class="create-meeting-buttons">
                         <button class="create-meeting-btn" data-type="internal" disabled>Internal</button>
                         <button class="create-meeting-btn" data-type="external" disabled>External</button>
-                        <button class="create-meeting-btn" data-type="interview">Interview</button>
+                        <button class="create-meeting-btn" data-type="interview" disabled>Interview</button>
                     </div>
                 </div>
                 <!-- Divider -->
@@ -330,6 +330,12 @@
                         <button class="action-btn primary-btn" id="generateProblemsBtn">
                             <span class="btn-icon-text">!?</span>
                             <span id="generateProblemsBtnLabel">Generate Problems</span>
+                        </button>
+                        <button class="icon-btn refresh-problems-btn" id="refreshProblemsBtn" title="Check Fibery for notes/transcript">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                                <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                            </svg>
                         </button>
                         <div class="problems-status" id="problemsStatus"></div>
                     </div>

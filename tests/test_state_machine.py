@@ -444,6 +444,61 @@ class TestMeetingMetadata:
         assert result["transcript_text"] == ""
         assert app._linked_transcript_text == ""
 
+    @pytest.mark.parametrize("meeting_type", ["internal", "external", "interview"])
+    def test_create_fibery_meeting_requires_name_when_blank(self, meeting_type):
+        app = _make_app()
+        client = MagicMock()
+
+        with patch("app.get_key", return_value="fibery-key"):
+            with patch("integrations.fibery_client.FiberyClient", return_value=client):
+                result = app.create_fibery_meeting(meeting_type, "")
+
+        assert result == {"success": False, "error": "Meeting name is required"}
+        client.create_entity.assert_not_called()
+
+    def test_check_problems_ready_reports_existing_problem_sources(self):
+        app = _make_app()
+        app._validated_entity = SimpleNamespace(space="Market", database="Market Interview")
+        app._fibery_client = MagicMock()
+        app._fibery_client.get_entity_transcript.return_value = "Interview transcript"
+        app._fibery_client.get_entity_notes.return_value = ""
+
+        result = app.check_problems_ready()
+
+        assert result == {
+            "success": True,
+            "has_notes": False,
+            "has_transcript": True,
+        }
+
+    def test_check_problems_ready_surfaces_fetch_errors_when_no_source_is_confirmed(self):
+        app = _make_app()
+        app._validated_entity = SimpleNamespace(space="Market", database="Market Interview")
+        app._fibery_client = MagicMock()
+        app._fibery_client.get_entity_transcript.side_effect = RuntimeError("401 Unauthorized")
+        app._fibery_client.get_entity_notes.return_value = ""
+
+        result = app.check_problems_ready()
+
+        assert result["success"] is False
+        assert "Could not fetch transcript from Fibery" in result["error"]
+        assert "Authentication failed. Check your API keys in Settings." in result["error"]
+
+    def test_check_problems_ready_keeps_success_when_other_source_has_content(self):
+        app = _make_app()
+        app._validated_entity = SimpleNamespace(space="Market", database="Market Interview")
+        app._fibery_client = MagicMock()
+        app._fibery_client.get_entity_transcript.side_effect = RuntimeError("timeout")
+        app._fibery_client.get_entity_notes.return_value = "Interview notes"
+
+        result = app.check_problems_ready()
+
+        assert result == {
+            "success": True,
+            "has_notes": True,
+            "has_transcript": False,
+        }
+
     def test_validate_fibery_url_retargets_pending_auto_flush_within_same_session(self, monkeypatch):
         app = _make_app(Settings(display_name="Test", audio_storage="fibery"))
         app._session = _make_pending_session()
