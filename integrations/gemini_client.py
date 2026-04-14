@@ -558,44 +558,58 @@ def _cleanup_transcript_chunk(
     user_prompt: str,
     audio_ref=None,
 ) -> str:
-    """Run Gemini cleanup for a single transcript chunk."""
+    """Run Gemini cleanup for a single transcript chunk with retry.
+
+    Mirrors _call_gemini_with_retry: 2 retry rounds with exponential backoff
+    across all models before giving up.
+    """
     from google.genai import types
 
     contents = [audio_ref, user_prompt] if audio_ref else user_prompt
     saw_overcompressed_output = False
+    max_retries = 2
 
-    for current_model in models_to_try:
-        try:
-            mode = "audio-assisted" if audio_ref else "text-only"
-            logger.info("Cleaning transcript with Gemini model=%s (%s)", current_model, mode)
-            response = client.models.generate_content(
-                model=current_model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=0.2,
-                ),
-            )
-            cleaned = (response.text or "").strip()
-            if _cleanup_output_is_suspiciously_short(transcript, cleaned):
-                saw_overcompressed_output = True
-                logger.warning(
-                    "Discarding suspiciously short cleanup output from %s (%d -> %d chars)",
-                    current_model,
-                    len(transcript),
-                    len(cleaned),
+    for attempt in range(max_retries):
+        for current_model in models_to_try:
+            try:
+                mode = "audio-assisted" if audio_ref else "text-only"
+                logger.info(
+                    "Cleaning transcript with Gemini model=%s (%s, attempt %d)",
+                    current_model, mode, attempt + 1,
                 )
-                continue
-            logger.info("Transcript cleanup complete (%d -> %d chars)", len(transcript), len(cleaned))
-            return cleaned
+                response = client.models.generate_content(
+                    model=current_model,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=0.2,
+                    ),
+                )
+                cleaned = (response.text or "").strip()
+                if _cleanup_output_is_suspiciously_short(transcript, cleaned):
+                    saw_overcompressed_output = True
+                    logger.warning(
+                        "Discarding suspiciously short cleanup output from %s (%d -> %d chars)",
+                        current_model,
+                        len(transcript),
+                        len(cleaned),
+                    )
+                    continue
+                logger.info("Transcript cleanup complete (%d -> %d chars)", len(transcript), len(cleaned))
+                return cleaned
 
-        except Exception as exc:
-            if _is_retryable_gemini_error(exc):
-                logger.warning("Falling back from %s for cleanup: %s", current_model, exc)
-                continue
+            except Exception as exc:
+                if _is_retryable_gemini_error(exc):
+                    logger.warning("Falling back from %s for cleanup: %s", current_model, exc)
+                    continue
 
-            logger.error("Transcript cleanup failed with %s: %s", current_model, exc)
-            raise
+                logger.error("Transcript cleanup failed with %s: %s", current_model, exc)
+                raise
+
+        if attempt < max_retries - 1:
+            sleep_time = 5 * (attempt + 1)
+            logger.warning("All cleanup models unavailable. Retrying in %d seconds...", sleep_time)
+            time.sleep(sleep_time)
 
     if saw_overcompressed_output:
         logger.warning("Cleanup output looked summarized; using raw transcript instead")
@@ -680,6 +694,9 @@ def cleanup_transcript(
                 logger.info("Cleaning transcript chunk %d/%d (%d chars)", index, len(chunks), len(chunk))
                 if on_progress:
                     on_progress(f"Improving transcript ({index}/{len(chunks)})...")
+                # Inter-chunk backoff to avoid back-to-back pressure on the API
+                if index > 1:
+                    time.sleep(3)
 
             user_prompt = _build_cleanup_user_prompt(
                 chunk,
@@ -687,16 +704,26 @@ def cleanup_transcript(
                 chunk_index=index,
                 chunk_count=len(chunks),
             )
-            cleaned_chunks.append(
-                _cleanup_transcript_chunk(
-                    client,
-                    transcript=chunk,
-                    system_prompt=system_prompt,
-                    models_to_try=models_to_try,
-                    user_prompt=user_prompt,
-                    audio_ref=audio_ref,
+            try:
+                cleaned_chunks.append(
+                    _cleanup_transcript_chunk(
+                        client,
+                        transcript=chunk,
+                        system_prompt=system_prompt,
+                        models_to_try=models_to_try,
+                        user_prompt=user_prompt,
+                        audio_ref=audio_ref,
+                    )
                 )
-            )
+            except Exception:
+                # Partial success: keep already-cleaned chunks, use raw for remainder
+                logger.warning(
+                    "Chunk %d/%d cleanup failed; using raw transcript for remaining chunks",
+                    index, len(chunks),
+                )
+                cleaned_chunks.append(chunk)
+                cleaned_chunks.extend(chunks[index:])  # raw remainder
+                break
 
         return "\n\n".join(part for part in cleaned_chunks if part).strip()
     finally:

@@ -50,6 +50,8 @@ def _get_cache_dir():
 
 
 class EntityPanel:
+    _URL_NOTIFY_DEBOUNCE_S = 0.2
+
     def __init__(self, main_window, settings=None, notify_js=None):
         self._main = main_window
         self._settings = settings
@@ -58,6 +60,8 @@ class EntityPanel:
         self._panel_wv = None       # second WebView2 control
         self._original_width = None
         self._original_min_width = None
+        self._url_notify_lock = threading.Lock()
+        self._url_notify_timer = None  # debounce timer for SourceChanged → JS
 
     # ------------------------------------------------------------------
     # Public API
@@ -280,7 +284,12 @@ class EntityPanel:
         return panel_wv
 
     def _notify_url_change(self, url: str) -> None:
-        """Forward a Fibery panel URL change to the main window JS safely."""
+        """Forward a Fibery panel URL change to the main window JS safely.
+
+        Debounced: rapid-fire SourceChanged / SPA pushState events are coalesced
+        into a single JS callback after _URL_NOTIFY_DEBOUNCE_S of quiet time.
+        This prevents evaluate_js() storms that can destabilise WebView2.
+        """
         if not url:
             return
 
@@ -307,7 +316,14 @@ class EntityPanel:
             except Exception:
                 logger.debug("Panel URL change notify skipped", exc_info=True)
 
-        threading.Thread(target=_dispatch, daemon=True).start()
+        with self._url_notify_lock:
+            if self._url_notify_timer is not None:
+                self._url_notify_timer.cancel()
+            self._url_notify_timer = threading.Timer(
+                self._URL_NOTIFY_DEBOUNCE_S, _dispatch
+            )
+            self._url_notify_timer.daemon = True
+            self._url_notify_timer.start()
 
     def _navigate(self, url: str):
         """Navigate the already-open panel to a new URL."""

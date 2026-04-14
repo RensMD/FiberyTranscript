@@ -1186,12 +1186,14 @@ refreshDevicesBtn.addEventListener('click', async () => {
 
 // Panel URL change callback (called from Python via SourceChanged)
 let _pendingDisambiguationRevalidate = false;
+let _panelRevalidateInFlight = false;
 window.onPanelUrlChanged = function(url) {
     panelCurrentUrl = url;
     updateSelectButtonState();
-    if (_pendingDisambiguationRevalidate) {
+    if (_pendingDisambiguationRevalidate && !_panelRevalidateInFlight) {
         _pendingDisambiguationRevalidate = false;
-        selectMeetingFromPanel();
+        _panelRevalidateInFlight = true;
+        selectMeetingFromPanel().finally(() => { _panelRevalidateInFlight = false; });
     }
 };
 
