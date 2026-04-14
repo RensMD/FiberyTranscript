@@ -12,7 +12,7 @@
 
 ; --- Version (can be overridden via makensis -DVERSION=x.y.z) ---
 !ifndef VERSION
-    !define VERSION "1.4.0"
+    !define VERSION "1.5.0"
 !endif
 
 ; --- General ---

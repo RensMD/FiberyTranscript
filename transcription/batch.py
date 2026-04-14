@@ -284,7 +284,7 @@ def _upload_and_transcribe(
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             if attempt > 1 and on_progress:
-                on_progress(f"Retrying upload (attempt {attempt}/{MAX_RETRIES})...")
+                on_progress(f"Retrying upload ({attempt}/{MAX_RETRIES})...")
             upload_url = transcriber.upload_file(upload_path)
             logger.info("Audio uploaded: %s", upload_url)
             break
@@ -540,7 +540,7 @@ def transcribe_with_diarization(
 
     if effective_recording_mode == "mic_only" and channel_count >= 2:
         if on_progress:
-            on_progress("Preparing mono transcription input...")
+            on_progress("Preparing audio...")
         audio_path = _downmix_to_mono_wav(audio_path)
         compressed_path = None
         audio_info = _read_audio_info(audio_path)
@@ -549,7 +549,7 @@ def transcribe_with_diarization(
 
     if remove_echo and is_multichannel:
         if on_progress:
-            on_progress("Preparing echo-aware transcription...")
+            on_progress("Preparing audio...")
 
         transcriber = aai.Transcriber()
         mono_speaker_hints = _build_echo_mode_speaker_hints(speaker_hints)

@@ -614,6 +614,7 @@ def cleanup_transcript(
     meeting_context: str = "",
     company_context: str = "",
     audio_path: str = "",
+    on_progress: "callable | None" = None,
 ) -> str:
     """Clean up a raw transcript using Gemini: fix names, sentences, and formatting.
 
@@ -677,6 +678,8 @@ def cleanup_transcript(
         for index, chunk in enumerate(chunks, start=1):
             if len(chunks) > 1:
                 logger.info("Cleaning transcript chunk %d/%d (%d chars)", index, len(chunks), len(chunk))
+                if on_progress:
+                    on_progress(f"Improving transcript ({index}/{len(chunks)})...")
 
             user_prompt = _build_cleanup_user_prompt(
                 chunk,

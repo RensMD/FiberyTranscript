@@ -1,5 +1,6 @@
 """Application orchestrator. Manages state, coordinates audio, transcription, and UI."""
 
+import copy
 import getpass
 import json
 import logging
@@ -85,6 +86,22 @@ class FiberyTranscriptApp:
     STATE_PREPARED = "prepared"
     STATE_PROCESSING = "processing"
     STATE_COMPLETED = "completed"
+
+    # Runtime fields that should be reset whenever staged/recording workflow state
+    # is discarded or reconstructed from an undo snapshot.
+    _WORKFLOW_RUNTIME_DEFAULTS = {
+        "_recording_segments": [],
+        "_segment_ogg_paths": [],
+        "_sleeping": False,
+        "_accumulated_recording_secs": 0.0,
+        "_recording_channels": None,
+        "_checkpoints": [],
+        "_decision_popup_active": False,
+        "_milestone_recording_secs": 0.0,
+        "_silence_checkpoint_added": False,
+        "_recording_silence_start": None,
+        "_segment_start_time": 0.0,
+    }
 
     def __init__(self, settings: Settings, data_dir: Path):
         self.settings = settings
@@ -181,6 +198,8 @@ class FiberyTranscriptApp:
         # can detect that their session is stale and stop firing UI callbacks.
         self._session_token: int = 0
         self._prepared_audio_info: Optional[dict] = None
+        self._undo_snapshot: Optional[dict] = None
+        self._undo_snapshot_expires_at: float = 0.0
 
         # Start level dispatch thread last — it reads fields initialized above.
         self._level_dispatch_thread = threading.Thread(
@@ -522,6 +541,172 @@ class FiberyTranscriptApp:
         )
         return self._recorder.start()
 
+    @staticmethod
+    def _clone_optional_data(value):
+        """Best-effort clone for snapshot data."""
+        if value is None:
+            return None
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+
+    def _clear_undo_snapshot(self) -> None:
+        self._undo_snapshot = None
+        self._undo_snapshot_expires_at = 0.0
+
+    def _reset_workflow_runtime_state(self) -> None:
+        """Reset transient recording/session runtime fields to safe defaults."""
+        for field_name, default_value in self._WORKFLOW_RUNTIME_DEFAULTS.items():
+            setattr(self, field_name, copy.deepcopy(default_value))
+
+    def _prune_expired_undo_snapshot(self) -> None:
+        if (
+            self._undo_snapshot
+            and self._undo_snapshot_expires_at
+            and time.monotonic() >= self._undo_snapshot_expires_at
+        ):
+            self._clear_undo_snapshot()
+
+    def _discard_paths(self, paths) -> None:
+        for raw_path in paths:
+            if not raw_path:
+                continue
+            try:
+                Path(raw_path).unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                logger.debug("Could not delete temporary audio file %s: %s", raw_path, e)
+
+    def _cleanup_session_audio_files(self, session: Optional[RecordingSession]) -> None:
+        if not session or session.context.is_uploaded_file:
+            return
+        self._discard_paths([session.context.compressed_path, session.context.wav_path])
+
+    def _build_undo_snapshot(self) -> dict:
+        return {
+            "state": self.state,
+            "session": self._session.clone() if self._session else None,
+            "prepared_audio_info": self._clone_optional_data(self._prepared_audio_info),
+            "validated_entity": self._validated_entity,
+            "fibery_client": self._fibery_client,
+            "entity_context": self._clone_optional_data(self._entity_context),
+            "linked_transcript_text": self._linked_transcript_text,
+            "transcript_mode": self._transcript_mode,
+            "recording_mode": self._recording_mode,
+            "summary_mode": self._summary_mode,
+            "summary_language": self._summary_language,
+        }
+
+    def _restore_undo_snapshot(self, snapshot: dict) -> None:
+        restored_session = snapshot.get("session")
+        self._session = restored_session.clone() if restored_session else None
+        self._prepared_audio_info = self._clone_optional_data(snapshot.get("prepared_audio_info"))
+        self._validated_entity = snapshot.get("validated_entity")
+        self._fibery_client = snapshot.get("fibery_client")
+        self._entity_context = self._clone_optional_data(snapshot.get("entity_context"))
+        self._linked_transcript_text = snapshot.get("linked_transcript_text", "")
+        self._transcript_mode = snapshot.get("transcript_mode", "append")
+        self._recording_mode = snapshot.get("recording_mode", "mic_only")
+        self._summary_mode = snapshot.get("summary_mode", "append")
+        self._summary_language = snapshot.get("summary_language", "en")
+        self._reset_workflow_runtime_state()
+        restored_state = snapshot.get("state", self.STATE_IDLE)
+        # Undo snapshots only represent already-staged work. If the stored state says
+        # "recording", we intentionally restore the session as idle because recreating
+        # a live capture pipeline from a snapshot is not safe or supported.
+        self.state = restored_state if restored_state != self.STATE_RECORDING else self.STATE_IDLE
+        if self.state != self.STATE_RECORDING:
+            self._resume_background_scanning()
+
+    def _discard_current_workflow_locked(self) -> None:
+        """Discard the current workflow state without preserving its audio."""
+        current_session = self._session
+        entity_for_lock = self._validated_entity if self._fibery_client else None
+
+        self._decision_popup_active = False
+        self._checkpoints = []
+        self._recording_silence_start = None
+        self._silence_checkpoint_added = False
+
+        if self.state == self.STATE_RECORDING:
+            if self._sleeping:
+                self._sleeping = False
+            else:
+                try:
+                    self.audio_capture.stop_capture()
+                except Exception as e:
+                    logger.warning("Error stopping capture during undo discard: %s", e)
+                if self._mixer:
+                    self._mixer.flush()
+                    self._mixer = None
+                if self._recorder:
+                    seg_path = self._recorder.stop()
+                    self._discard_paths([seg_path, self._recorder.compressed_path])
+                    self._recorder = None
+            self._release_recording_lock_async(entity_for_lock)
+
+        self._discard_paths(self._recording_segments)
+        self._discard_paths(self._segment_ogg_paths)
+        self._cleanup_session_audio_files(current_session)
+        self._session = None
+        self._prepared_audio_info = None
+        self._reset_workflow_runtime_state()
+        self.state = self.STATE_IDLE
+        self._resume_background_scanning()
+
+    def get_session_snapshot(self) -> dict:
+        """Return backend workflow state for frontend reconciliation."""
+        with self._audio_lifecycle_lock:
+            self._prune_expired_undo_snapshot()
+            entity = self._validated_entity or (self._session.context.entity if self._session else None)
+            return {
+                "state": self.state,
+                "prepared_audio": self._clone_optional_data(self._prepared_audio_info),
+                "has_linked_meeting": bool(entity),
+                "entity_name": getattr(entity, "entity_name", "") or "",
+                "entity_database": getattr(entity, "database", "") or "",
+                "undo_available": self._undo_snapshot is not None,
+            }
+
+    def reset_session_keep_meeting(self) -> None:
+        """Clear workflow outputs while keeping the linked meeting context."""
+        with self._audio_lifecycle_lock:
+            if self.state in (self.STATE_RECORDING, self.STATE_PROCESSING):
+                raise RuntimeError(f"Cannot reset workflow while in state: {self.state}")
+            self._session_token += 1
+            self._session = None
+            self._prepared_audio_info = None
+            self._reset_workflow_runtime_state()
+            self.state = self.STATE_IDLE
+            self._resume_background_scanning()
+            logger.info("Workflow reset while keeping linked meeting (token=%d)", self._session_token)
+
+    def stash_session_undo_snapshot(self, ttl_seconds: int = 15) -> dict:
+        """Capture the current workflow state for temporary undo."""
+        with self._audio_lifecycle_lock:
+            self._prune_expired_undo_snapshot()
+            ttl = max(1, int(ttl_seconds or 15))
+            if self.state not in (self.STATE_PREPARED, self.STATE_COMPLETED) or not self._session:
+                return {"stored": False, "undo_available": self._undo_snapshot is not None}
+            self._undo_snapshot = self._build_undo_snapshot()
+            self._undo_snapshot_expires_at = time.monotonic() + ttl
+            return {"stored": True, "undo_available": True, "ttl_seconds": ttl}
+
+    def undo_session_replace(self) -> dict:
+        """Restore the last stashed workflow snapshot if it is still available."""
+        with self._audio_lifecycle_lock:
+            self._prune_expired_undo_snapshot()
+            if not self._undo_snapshot:
+                raise RuntimeError("No replacement session is available to undo.")
+            snapshot = self._undo_snapshot
+            self._clear_undo_snapshot()
+            self._session_token += 1
+            self._discard_current_workflow_locked()
+            self._restore_undo_snapshot(snapshot)
+            return self.get_session_snapshot()
+
     def reset_session(self) -> None:
         """Clear all session data and return to idle state.
 
@@ -535,20 +720,13 @@ class FiberyTranscriptApp:
         self._entity_context = None
         self._linked_transcript_text = ""
         self._session = None
-        self._recording_segments = []
-        self._segment_ogg_paths = []
-        self._sleeping = False
-        self._accumulated_recording_secs = 0.0
-        self._recording_channels = None
-        self._checkpoints = []
-        self._decision_popup_active = False
-        self._milestone_recording_secs = 0.0
-        self._silence_checkpoint_added = False
+        self._reset_workflow_runtime_state()
         self._transcript_mode = "append"
         self._recording_mode = "mic_only"
         self._summary_mode = "append"
         self._summary_language = "en"
         self._prepared_audio_info = None
+        self._clear_undo_snapshot()
         self.state = self.STATE_IDLE
         logger.info("Session reset (token=%d)", self._session_token)
 
@@ -709,6 +887,7 @@ class FiberyTranscriptApp:
         self._validated_entity = None
         self._entity_context = None
         self._linked_transcript_text = ""
+        self._clear_undo_snapshot()
         logger.info("Meeting deselected")
 
     def _fetch_entity_context(self):
@@ -2126,6 +2305,14 @@ class FiberyTranscriptApp:
         def _stale():
             return self._session_token != token
 
+        # Upload audio to Fibery at transcription start (parallel with transcription)
+        if self.settings.audio_storage == "fibery" and not results.get_audio_uploaded():
+            threading.Thread(
+                target=self._upload_audio_to_fibery,
+                args=(wav_path, session, token),
+                daemon=True,
+            ).start()
+
         try:
             from transcription.batch import transcribe_with_diarization
 
@@ -2226,6 +2413,7 @@ class FiberyTranscriptApp:
                         model=self.settings.gemini_model_cleanup,
                         model_fallback=self.settings.gemini_model_fallback,
                         audio_path=cleanup_audio,
+                        on_progress=on_progress,
                     )
                     results.set_cleaned_transcript(cleaned)
                 except Exception as e:
@@ -2256,11 +2444,6 @@ class FiberyTranscriptApp:
                     args=(ctx.entity, ctx.fibery_client, session, token, force_replace_send),
                     daemon=True,
                 ).start()
-
-            # Upload audio to Fibery if setting is "fibery"
-            audio_upload_ok = False
-            if self.settings.audio_storage == "fibery" and not results.get_audio_uploaded():
-                audio_upload_ok = self._upload_audio_to_fibery(wav_path, session, token)
 
             uploaded_audio_path = result.get("audio_path", "")
 
@@ -2802,25 +2985,6 @@ class FiberyTranscriptApp:
                 threading.Thread(
                     target=self._auto_send_transcript,
                     args=(entity, client, session, session_token),
-                    daemon=True,
-                ).start()
-
-            # If audio storage is Fibery and we have a recording, upload it now.
-            # Build a proxy session with the NEW entity so audio lands on the
-            # same target as the transcript (unified post-hoc routing).
-            if self.settings.audio_storage == "fibery" and session and session.context.wav_path:
-                upload_session = RecordingSession(SessionContext(
-                    entity=entity,
-                    fibery_client=client,
-                    entity_context=self._entity_context,
-                    wav_path=session.context.wav_path,
-                    compressed_path=session.context.compressed_path,
-                    is_uploaded_file=session.context.is_uploaded_file,
-                ))
-                upload_session.results = session_results
-                threading.Thread(
-                    target=self._upload_audio_to_fibery,
-                    args=(session.context.wav_path, upload_session, session_token),
                     daemon=True,
                 ).start()
 

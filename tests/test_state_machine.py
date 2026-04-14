@@ -207,6 +207,80 @@ class TestResetSession:
         assert app._summary_language == "en"
 
 
+class TestSessionSnapshots:
+    @pytest.mark.parametrize("state", ["idle", "recording", "prepared", "processing", "completed"])
+    def test_get_session_snapshot_reports_state_and_linked_meeting_metadata(self, state):
+        app = _make_app()
+        entity = SimpleNamespace(entity_name="Weekly sync", database="Internal Meeting")
+        app.state = state
+
+        if state == app.STATE_RECORDING:
+            app._session = RecordingSession(SessionContext(entity=entity, wav_path="meeting.wav"))
+        else:
+            app._validated_entity = entity
+
+        if state in (app.STATE_PREPARED, app.STATE_COMPLETED):
+            app._session = RecordingSession(SessionContext(entity=entity, wav_path="meeting.wav"))
+            app._prepared_audio_info = {"file_path": "meeting.wav", "file_name": "meeting.wav"}
+
+        snapshot = app.get_session_snapshot()
+
+        assert snapshot["state"] == state
+        assert snapshot["has_linked_meeting"] is True
+        assert snapshot["entity_name"] == "Weekly sync"
+        assert snapshot["entity_database"] == "Internal Meeting"
+        assert snapshot["undo_available"] is False
+        if state in (app.STATE_PREPARED, app.STATE_COMPLETED):
+            assert snapshot["prepared_audio"]["file_path"] == "meeting.wav"
+        else:
+            assert snapshot["prepared_audio"] is None
+
+    def test_get_session_snapshot_prunes_expired_undo_snapshot(self, monkeypatch):
+        app = _make_app()
+        app._undo_snapshot = {"state": app.STATE_COMPLETED}
+        app._undo_snapshot_expires_at = 10.0
+
+        monkeypatch.setattr("app.time.monotonic", lambda: 11.0)
+
+        snapshot = app.get_session_snapshot()
+
+        assert snapshot["undo_available"] is False
+        assert app._undo_snapshot is None
+
+
+class TestResetSessionKeepMeeting:
+    def test_preserves_meeting_context_and_modes_while_clearing_workflow_outputs(self):
+        app = _make_app()
+        entity = SimpleNamespace(entity_name="Weekly sync", database="Internal Meeting")
+        app.state = app.STATE_COMPLETED
+        app._validated_entity = entity
+        app._entity_context = {"company": "Fibery"}
+        app._linked_transcript_text = "Existing Fibery transcript"
+        app._transcript_mode = "replace"
+        app._recording_mode = "mic_and_speakers"
+        app._summary_mode = "replace"
+        app._summary_language = "nl"
+        app._prepared_audio_info = {"file_path": "meeting.wav"}
+        app._session = RecordingSession(SessionContext(entity=entity, wav_path="meeting.wav"))
+        app._resume_background_scanning = MagicMock()
+        start_token = app._session_token
+
+        app.reset_session_keep_meeting()
+
+        assert app.state == app.STATE_IDLE
+        assert app._validated_entity is entity
+        assert app._entity_context == {"company": "Fibery"}
+        assert app._linked_transcript_text == "Existing Fibery transcript"
+        assert app._transcript_mode == "replace"
+        assert app._recording_mode == "mic_and_speakers"
+        assert app._summary_mode == "replace"
+        assert app._summary_language == "nl"
+        assert app._prepared_audio_info is None
+        assert app._session is None
+        assert app._session_token == start_token + 1
+        app._resume_background_scanning.assert_called_once_with()
+
+
 class TestMeetingLinkState:
     def test_deselect_meeting_clears_linked_transcript(self):
         app = _make_app()
@@ -378,15 +452,10 @@ class TestMeetingMetadata:
                 assert app.validate_fibery_url("https://example.fibery.io/a")["success"] is True
                 assert app.validate_fibery_url("https://example.fibery.io/b")["success"] is True
 
-        assert len(spawned) == 6
-        transcript_thread, audio_thread, summary_thread = spawned[-3:]
+        assert len(spawned) == 4
+        transcript_thread, summary_thread = spawned[-2:]
         assert transcript_thread._target == app._auto_send_transcript
         assert transcript_thread._args == (entity_b, client, app._session, app._session_token)
-        assert audio_thread._target == app._upload_audio_to_fibery
-        assert audio_thread._args[0] == app._session.context.wav_path
-        assert audio_thread._args[1].context.entity is entity_b
-        assert audio_thread._args[1].results is app._session.results
-        assert audio_thread._args[2] == app._session_token
         assert summary_thread._target == app._auto_send_pending_summary
         assert summary_thread._args == (entity_b, client, app._session, app._session_token)
 
@@ -413,6 +482,142 @@ class TestMeetingMetadata:
 
         assert result["success"] is True
         assert spawned == []
+
+    def test_start_transcription_freezes_selected_meeting_at_click_time(self, monkeypatch):
+        app = _make_app(Settings(display_name="Test", audio_storage="fibery"))
+        entity_at_prepare = SimpleNamespace(space="General", database="Internal Meeting", entity_name="A", uuid="entity-a")
+        entity_at_click = SimpleNamespace(space="General", database="Internal Meeting", entity_name="B", uuid="entity-b")
+        client_at_prepare = MagicMock()
+        client_at_click = MagicMock()
+        app._session = RecordingSession(SessionContext(
+            entity=entity_at_prepare,
+            fibery_client=client_at_prepare,
+            wav_path="meeting.wav",
+            compressed_path="meeting.ogg",
+        ))
+        app._prepared_audio_info = {"file_path": "meeting.wav"}
+        app._validated_entity = entity_at_click
+        app._fibery_client = client_at_click
+        app._entity_context = {"company": "Fibery"}
+        app.state = app.STATE_PREPARED
+
+        spawned = []
+        app._run_batch_processing = MagicMock()
+        monkeypatch.setattr("app.threading.Thread", _thread_spy(spawned))
+
+        result = app.start_transcription()
+
+        assert result["success"] is True
+        assert len(spawned) == 1
+        batch_thread = spawned[0]
+        assert batch_thread._target == app._run_batch_processing
+        session_arg = batch_thread._args[0]
+        assert session_arg.context.entity is entity_at_click
+        assert session_arg.context.fibery_client is client_at_click
+        assert session_arg.context.entity_context == {"company": "Fibery"}
+        assert session_arg.context.wav_path == "meeting.wav"
+
+
+class TestUndoableReplacement:
+    def test_undo_session_replace_restores_stashed_workflow_and_discards_replacement_recording(self):
+        app = _make_app()
+        entity = SimpleNamespace(entity_name="Weekly sync", database="Internal Meeting")
+        app.state = app.STATE_COMPLETED
+        app._validated_entity = entity
+        app._fibery_client = MagicMock()
+        app._entity_context = {"company": "Fibery"}
+        app._linked_transcript_text = "Existing Fibery transcript"
+        app._transcript_mode = "replace"
+        app._recording_mode = "mic_and_speakers"
+        app._summary_mode = "replace"
+        app._summary_language = "nl"
+        app._prepared_audio_info = {"file_path": "meeting.wav", "file_name": "meeting.wav"}
+        app._session = RecordingSession(SessionContext(entity=entity, wav_path="meeting.wav"))
+        app._session.results.set_batch_result({
+            "utterances": [{"speaker": "A", "text": "Pending transcript", "start": 0, "end": 1}]
+        })
+        app._session.results.set_cleaned_transcript("Pending transcript")
+        app._session.results.set_generated_summary("Pending summary")
+
+        stash = app.stash_session_undo_snapshot(15)
+
+        assert stash == {"stored": True, "undo_available": True, "ttl_seconds": 15}
+
+        app.reset_session_keep_meeting()
+        app.state = app.STATE_RECORDING
+        audio_capture = MagicMock()
+        mixer = MagicMock()
+        recorder = MagicMock()
+        recorder.stop.return_value = Path("replacement.wav")
+        recorder.compressed_path = "replacement.ogg"
+        app.audio_capture = audio_capture
+        app._mixer = mixer
+        app._recorder = recorder
+        app._session = RecordingSession(SessionContext(entity=entity, wav_path="replacement.wav"))
+        app._release_recording_lock_async = MagicMock()
+
+        snapshot = app.undo_session_replace()
+
+        assert snapshot["state"] == app.STATE_COMPLETED
+        assert snapshot["prepared_audio"]["file_path"] == "meeting.wav"
+        assert snapshot["has_linked_meeting"] is True
+        assert snapshot["entity_name"] == "Weekly sync"
+        assert snapshot["entity_database"] == "Internal Meeting"
+        assert snapshot["undo_available"] is False
+        assert app._validated_entity is entity
+        assert app._linked_transcript_text == "Existing Fibery transcript"
+        assert app._transcript_mode == "replace"
+        assert app._recording_mode == "mic_and_speakers"
+        assert app._summary_mode == "replace"
+        assert app._summary_language == "nl"
+        assert app._prepared_audio_info["file_path"] == "meeting.wav"
+        assert app._session is not None
+        assert app._session.context.entity is entity
+        assert app._session.results.get_cleaned_transcript() == "Pending transcript"
+        assert app._session.results.get_generated_summary() == "Pending summary"
+        audio_capture.stop_capture.assert_called_once_with()
+        mixer.flush.assert_called_once_with()
+        recorder.stop.assert_called_once_with()
+        app._release_recording_lock_async.assert_called_once_with(entity)
+
+    def test_undo_session_replace_rejects_expired_snapshot(self, monkeypatch):
+        app = _make_app()
+        entity = SimpleNamespace(entity_name="Weekly sync", database="Internal Meeting")
+        app.state = app.STATE_COMPLETED
+        app._validated_entity = entity
+        app._session = RecordingSession(SessionContext(entity=entity, wav_path="meeting.wav"))
+
+        app.stash_session_undo_snapshot(1)
+        monkeypatch.setattr("app.time.monotonic", lambda: app._undo_snapshot_expires_at + 1)
+
+        with pytest.raises(RuntimeError, match="No replacement session is available to undo."):
+            app.undo_session_replace()
+
+        assert app._undo_snapshot is None
+        assert app.get_session_snapshot()["undo_available"] is False
+
+    def test_undo_snapshot_does_not_restore_stale_inflight_guard_flags(self):
+        app = _make_app()
+        entity = SimpleNamespace(entity_name="Weekly sync", database="Internal Meeting")
+        app.state = app.STATE_COMPLETED
+        app._validated_entity = entity
+        app._session = RecordingSession(SessionContext(entity=entity, wav_path="meeting.wav"))
+        app._session.results.set_batch_result({
+            "utterances": [{"speaker": "A", "text": "Pending transcript", "start": 0, "end": 1}]
+        })
+        app._session.results.try_start_transcript_send()
+        app._session.results.try_start_summary_send()
+        app._session.results.try_start_audio_upload()
+
+        stash = app.stash_session_undo_snapshot(15)
+
+        assert stash["stored"] is True
+        snapshot = app.undo_session_replace()
+        assert snapshot["state"] == app.STATE_COMPLETED
+        assert app._session is not None
+        assert app._session.results.try_start_transcript_send() is True
+        assert app._session.results.try_start_summary_send() is True
+        assert app._session.results.try_start_audio_upload() is True
 
 
 class TestSessionBoundaryWorkers:
@@ -468,7 +673,10 @@ class TestUploadedFileStaging:
     def test_upload_and_transcribe_copies_external_file_to_default_recordings_dir(self):
         root = _make_test_root("test_uploaded_copy_default")
         try:
-            app = _make_app(data_dir=root / "appdata")
+            app = _make_app(
+                settings=Settings(display_name="Test", save_recordings=True),
+                data_dir=root / "appdata",
+            )
             app._validate_audio_file = MagicMock()
             app.stop_background_scanning = MagicMock()
             app.start_background_scanning = MagicMock()
@@ -700,7 +908,7 @@ class TestRecorderLifecycle:
         try:
             recordings_dir = root / "saved-audio"
             app = _make_app(
-                settings=Settings(display_name="Test", recordings_dir=str(recordings_dir)),
+                settings=Settings(display_name="Test", recordings_dir=str(recordings_dir), save_recordings=True),
                 data_dir=root / "appdata",
             )
             app._validate_audio_file = MagicMock()

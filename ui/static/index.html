@@ -4,19 +4,48 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>FiberyTranscript</title>
-    <link rel="icon" type="image/x-icon" href="icon.ico?v=1.4.5">
-    <link rel="icon" type="image/png" sizes="32x32" href="icon.png?v=1.4.5">
-    <link rel="icon" type="image/svg+xml" href="icon.svg?v=1.4.5">
-    <link rel="stylesheet" href="css/styles.css?v=1.4.5">
+    <link rel="icon" type="image/x-icon" href="icon.ico?v=1.5.0">
+    <link rel="icon" type="image/png" sizes="32x32" href="icon.png?v=1.5.0">
+    <link rel="icon" type="image/svg+xml" href="icon.svg?v=1.5.0">
+    <link rel="stylesheet" href="css/styles.css?v=1.5.0">
 </head>
 <body data-theme="dark">
     <!-- Header Toolbar -->
     <header class="header">
         <div class="header-left">
-            <button class="new-meeting-link hidden" id="newMeetingBtn">+ New meeting</button>
+            <button class="reset-btn" id="newMeetingBtn" title="Reset meeting">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                    <path d="M3 3v5h5"/>
+                </svg>
+                Reset
+            </button>
             <button class="action-btn small-btn" id="retryBatchBtn" style="display:none;">Retry Transcription</button>
         </div>
         <div class="header-right">
+            <div class="header-tabs" role="tablist" aria-label="Workflow tabs">
+                <button class="header-tab active" id="mainTab" data-tab="main" type="button" role="tab" aria-selected="true" aria-controls="mainTabPanel">
+                    <span class="header-tab-icon" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="4" y="5" width="16" height="14" rx="3"></rect>
+                            <path d="M4 10h16"></path>
+                        </svg>
+                    </span>
+                    <span class="header-tab-label">MAIN</span>
+                </button>
+                <button class="header-tab" id="recordingTab" data-tab="recording" type="button" role="tab" aria-selected="false" aria-controls="recordingTabPanel">
+                    <span class="header-tab-icon" aria-hidden="true">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3.5"></circle>
+                            <path d="M12 5v2.5"></path>
+                            <path d="M12 16.5V19"></path>
+                            <path d="M19 12h-2.5"></path>
+                            <path d="M7.5 12H5"></path>
+                        </svg>
+                    </span>
+                    <span class="header-tab-label">RECORD</span>
+                </button>
+            </div>
             <button class="icon-btn" id="settingsBtn" title="Settings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M11.482 20.924a1.666 1.666 0 0 1 -1.157 -1.241a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.312 .318 1.644 1.794 .995 2.697" />
@@ -30,6 +59,7 @@
 
     <!-- Main Content -->
     <main class="main">
+        <div class="tab-panel active" id="mainTabPanel" role="tabpanel" aria-labelledby="mainTab">
 
         <!-- Step 1: Meeting -->
         <section class="step-panel" id="fiberyLinkPanel">
@@ -42,19 +72,6 @@
                 <h2>Meeting</h2>
             </div>
             <div class="step-body">
-                <!-- Hint text (shown when no entity is browsed in the panel) -->
-                <span class="fibery-select-hint" id="fiberySelectHint">Browse to a meeting in the panel →</span>
-                <!-- Select meeting from panel (hidden until panel shows a valid entity) -->
-                <div class="fibery-select-row hidden" id="fiberySelectRow">
-                    <button class="action-btn" id="selectMeetingBtn" disabled>
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-                        <span id="selectMeetingBtnLabel">Select Current Meeting</span>
-                    </button>
-                </div>
-                <!-- Divider -->
-                <div class="section-divider" id="createMeetingDividerRow">
-                    <span class="section-divider-text">or create new</span>
-                </div>
                 <!-- Create new meeting fields -->
                 <div class="create-meeting-fields" id="createMeetingFields">
                     <input type="text" id="createMeetingName" class="create-meeting-name" placeholder="Meeting name..." />
@@ -63,6 +80,19 @@
                         <button class="create-meeting-btn" data-type="external" disabled>External</button>
                         <button class="create-meeting-btn" data-type="interview">Interview</button>
                     </div>
+                </div>
+                <!-- Divider -->
+                <div class="section-divider" id="createMeetingDividerRow">
+                    <span class="section-divider-text">or create new</span>
+                </div>
+                <!-- Hint text (shown when no entity is browsed in the panel) -->
+                <span class="fibery-select-hint" id="fiberySelectHint">Browse to a meeting in the panel →</span>
+                <!-- Select meeting from panel (hidden until panel shows a valid entity) -->
+                <div class="fibery-select-row hidden" id="fiberySelectRow">
+                    <button class="action-btn" id="selectMeetingBtn" disabled>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                        <span id="selectMeetingBtnLabel">Select Current Meeting</span>
+                    </button>
                 </div>
                 <!-- Disambiguation: shown when compound URL has two entity candidates -->
                 <div id="fiberyDisambiguation" class="fibery-disambiguation hidden">
@@ -86,97 +116,41 @@
             </div>
         </section>
 
-        <!-- Step 2: Recording -->
-        <section class="step-panel" id="recordingPanel">
+        <!-- Step 2: Audio -->
+        <section class="step-panel" id="audioPanel">
             <div class="step-header">
                 <span class="step-icon">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                        <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
                     </svg>
                 </span>
-                <h2>Recording</h2>
-                <button class="icon-btn refresh-devices-btn" id="refreshDevicesBtn" title="Refresh audio devices">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
-                        <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
-                    </svg>
-                </button>
+                <h2>Audio</h2>
             </div>
             <div class="step-body">
-                <div class="audio-source-tools" id="audioSourceTools">
-                    <!-- Device row: Microphone -->
-                    <div class="device-row">
-                        <div class="selector-group">
-                            <label for="micSelect">Microphone</label>
-                            <select id="micSelect">
-                                <option value="">-- Select Microphone --</option>
-                            </select>
-                        </div>
-                        <div class="level-bar-container">
-                            <canvas id="micLevelCanvas" width="400" height="6"></canvas>
-                        </div>
-                    </div>
-
-                    <!-- Device row: System Audio -->
-                    <div class="device-row">
-                        <div class="selector-group">
-                            <label for="loopbackSelect">Speaker</label>
-                            <select id="loopbackSelect">
-                                <option value="">-- Select Speaker --</option>
-                            </select>
-                        </div>
-                        <div class="level-bar-container">
-                            <canvas id="sysLevelCanvas" width="400" height="6"></canvas>
-                        </div>
-                    </div>
-
-                    <!-- Audio Health Indicators (visible during recording) -->
-                    <div class="audio-health hidden" id="audioHealth">
-                        <span class="health-badge" id="healthMic"><span class="health-dot green"></span> Mic active</span>
-                        <span class="health-badge" id="healthSys"><span class="health-dot green"></span> System active</span>
-                        <span class="health-badge hidden" id="healthClipping"><span class="health-dot red pulse"></span> Clipping!</span>
-                        <span class="health-badge hidden" id="healthSilence"><span class="health-dot gray"></span> <span id="healthSilenceText">No speech</span></span>
-                    </div>
-                </div>
-
-                <!-- Recording Controls -->
-                <div class="recording-controls">
-                    <button class="record-btn" id="recordBtn">
-                        <span class="record-icon"></span>
-                        <span id="recordBtnText">Start Recording</span>
+                <div class="audio-source-row" id="audioSourceRow">
+                    <button class="action-btn upload-btn" id="browseAudioBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <span>Upload File</span>
                     </button>
-                    <!-- Timer hidden until recording starts -->
-                    <div class="collapsible collapsed" id="recordingMetaCollapsible">
-                        <div class="recording-meta">
-                            <span class="timer" id="recordTimer">00:00:00</span>
-                        </div>
-                    </div>
+                    <span class="audio-source-or">or</span>
+                    <button class="record-btn" id="goToRecordingBtn">
+                        <span class="record-icon"></span>
+                        <span>New Recording</span>
+                    </button>
                 </div>
-
-                <!-- Upload section (hidden during recording) -->
-                <div class="collapsible" id="uploadCollapsible">
+                <div class="collapsible collapsed" id="uploadCollapsible">
                     <div>
-                        <!-- Upload Divider -->
-                        <div class="section-divider" id="uploadDivider">
-                            <span class="section-divider-text">or upload an existing recording</span>
-                        </div>
-
-                        <!-- Upload Controls -->
                         <div class="upload-controls" id="uploadControls">
-                            <button class="action-btn upload-btn" id="browseAudioBtn">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                    <polyline points="17 8 12 3 7 8"/>
-                                    <line x1="12" y1="3" x2="12" y2="15"/>
-                                </svg>
-                                <span>Browse Audio File</span>
-                            </button>
-                            <div class="upload-file-info hidden" id="uploadFileInfo">
+                            <div class="upload-file-info hidden" id="stagedAudioInfo">
                                 <div class="upload-file-details">
-                                    <span class="upload-file-name" id="uploadFileName"></span>
-                                    <span class="upload-file-meta" id="uploadFileMeta"></span>
+                                    <span class="upload-file-name" id="stagedAudioName"></span>
+                                    <span class="upload-file-meta" id="stagedAudioMeta"></span>
                                 </div>
-                                <button class="link-btn" id="clearUploadBtn">Clear</button>
+                                <button class="link-btn" id="clearStagedAudioBtn">Clear</button>
                             </div>
                             <div class="collapsible collapsed" id="audioStorageCollapsible">
                                 <div class="option-row" id="audioStorageGroup">
@@ -191,7 +165,6 @@
                                             <label for="storageFibery">Yes</label>
                                         </div>
                                     </div>
-                                    <span class="audio-storage-hint" id="audioStorageHint"></span>
                                 </div>
                             </div>
                         </div>
@@ -205,13 +178,10 @@
         <section class="step-panel" id="transcribePanel">
             <div class="step-header">
                 <span class="step-icon">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
-                    </svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+
                 </span>
-                <h2>Transcribe</h2>
+                <h2>Transcript</h2>
             </div>
             <div class="step-body">
                 <div class="option-row">
@@ -228,15 +198,15 @@
                     </div>
                 </div>
                 <div class="option-row">
-                    <span class="option-label">New transcript</span>
+                    <span class="option-label">Place new text</span>
                     <div class="summary-style-options" role="radiogroup" aria-label="Transcript mode">
                         <div class="summary-style-option">
                             <input type="radio" id="modeAppend" name="transcriptMode" value="append" checked>
-                            <label for="modeAppend">Append</label>
+                            <label for="modeAppend">Below</label>
                         </div>
                         <div class="summary-style-option">
                             <input type="radio" id="modeReplace" name="transcriptMode" value="replace">
-                            <label for="modeReplace">Replace</label>
+                            <label for="modeReplace">Overwrite</label>
                         </div>
                     </div>
                 </div>
@@ -246,6 +216,9 @@
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                     <span id="transcribeBtnLabel">Transcribe</span>
                 </button>
+                <div class="copy-links">
+                    <button class="link-btn" id="copyTranscriptBtn" title="Copy raw transcript">Copy Transcript</button>
+                </div>
             </div>
         </section>
         </div>
@@ -259,10 +232,11 @@
             <div class="step-header">
                 <span class="step-icon">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                        <polygon points="8 11.2 9.5 14.4 13 14.9 10.5 17.3 11.1 20.8 8 19.1 4.9 20.8 5.5 17.3 3 14.9 6.5 14.4"/>
+                        <polygon points="18 2.7 19.1 4.9 21.5 5.2 19.8 6.9 20.2 9.3 18 8.2 15.8 9.3 16.2 6.9 14.5 5.2 16.9 4.9"/>
                     </svg>
                 </span>
-                <h2>AI Summary</h2>
+                <h2>Summary</h2>
             </div>
             <div class="step-body">
                 <!-- Additional instructions for summarization -->
@@ -298,15 +272,15 @@
                         </div>
                     </div>
                     <div class="option-row">
-                        <span class="option-label">Write</span>
+                        <span class="option-label">Place new text</span>
                         <div class="summary-style-options" role="radiogroup" aria-label="Summary mode">
                             <div class="summary-style-option">
                                 <input type="radio" id="summaryModeAppend" name="summaryMode" value="append" checked>
-                                <label for="summaryModeAppend">Append</label>
+                                <label for="summaryModeAppend">Below</label>
                             </div>
                             <div class="summary-style-option">
                                 <input type="radio" id="summaryModeReplace" name="summaryMode" value="replace">
-                                <label for="summaryModeReplace">Replace</label>
+                                <label for="summaryModeReplace">Overwrite</label>
                             </div>
                         </div>
                     </div>
@@ -338,11 +312,10 @@
                 <div class="send-actions" id="sendActions">
                     <div class="send-row">
                         <button class="action-btn primary-btn" id="summarizeBtn">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="8 11.2 9.5 14.4 13 14.9 10.5 17.3 11.1 20.8 8 19.1 4.9 20.8 5.5 17.3 3 14.9 6.5 14.4"/><polygon points="18 2.7 19.1 4.9 21.5 5.2 19.8 6.9 20.2 9.3 18 8.2 15.8 9.3 16.2 6.9 14.5 5.2 16.9 4.9"/></svg>
                             <span id="summarizeBtnLabel">Summarize</span>
                         </button>
                         <div class="copy-links">
-                            <button class="link-btn" id="copyTranscriptBtn" title="Copy raw transcript">Copy Transcript</button>
                             <button class="link-btn" id="copySummaryBtn" title="Copy AI summary" disabled>Copy Summary</button>
                         </div>
                     </div>
@@ -355,7 +328,7 @@
                     </div>
                     <div class="problems-row hidden" id="problemsRow">
                         <button class="action-btn primary-btn" id="generateProblemsBtn">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <span class="btn-icon-text">!?</span>
                             <span id="generateProblemsBtnLabel">Generate Problems</span>
                         </button>
                         <div class="problems-status" id="problemsStatus"></div>
@@ -363,6 +336,72 @@
                 </div>
             </div>
         </section>
+        </div>
+
+        </div>
+        <div class="tab-panel hidden" id="recordingTabPanel" role="tabpanel" aria-labelledby="recordingTab">
+            <section class="step-panel step-panel-last" id="recordingPanel">
+                <div class="step-header">
+                    <span class="step-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                        </svg>
+                    </span>
+                    <h2>Recording</h2>
+                    <button class="icon-btn refresh-devices-btn" id="refreshDevicesBtn" title="Refresh audio devices">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                            <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="step-body">
+                    <div class="audio-source-tools" id="audioSourceTools">
+                        <div class="device-row">
+                            <div class="selector-group">
+                                <label for="micSelect">Microphone</label>
+                                <select id="micSelect">
+                                    <option value="">-- Select Microphone --</option>
+                                </select>
+                            </div>
+                            <div class="level-bar-container">
+                                <canvas id="micLevelCanvas" width="400" height="6"></canvas>
+                            </div>
+                        </div>
+
+                        <div class="device-row">
+                            <div class="selector-group">
+                                <label for="loopbackSelect">Speaker</label>
+                                <select id="loopbackSelect">
+                                    <option value="">-- Select Speaker --</option>
+                                </select>
+                            </div>
+                            <div class="level-bar-container">
+                                <canvas id="sysLevelCanvas" width="400" height="6"></canvas>
+                            </div>
+                        </div>
+
+                        <div class="audio-health hidden" id="audioHealth">
+                            <span class="health-badge" id="healthMic"><span class="health-dot green"></span> Mic active</span>
+                            <span class="health-badge" id="healthSys"><span class="health-dot green"></span> System active</span>
+                            <span class="health-badge hidden" id="healthClipping"><span class="health-dot red pulse"></span> Clipping!</span>
+                            <span class="health-badge hidden" id="healthSilence"><span class="health-dot gray"></span> <span id="healthSilenceText">No speech</span></span>
+                        </div>
+                    </div>
+
+                    <div class="recording-controls">
+                        <button class="record-btn" id="recordBtn">
+                            <span class="record-icon"></span>
+                            <span id="recordBtnText">Start Recording</span>
+                        </button>
+                        <div class="collapsible collapsed" id="recordingMetaCollapsible">
+                            <div class="recording-meta">
+                                <span class="timer" id="recordTimer">00:00:00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
         </div>
 
     </main>
@@ -558,7 +597,7 @@
         <div class="silence-panel">
             <h3 class="silence-title">Did the meeting end?</h3>
             <p class="silence-desc" id="decisionDesc"></p>
-            <!-- <p class="decision-recorded">Recorded: <span id="decisionTimer">00:00</span></p> -->
+            <p class="decision-recorded">Recorded: <span id="decisionTimer">00:00</span></p>
             <div class="silence-actions decision-actions">
                 <button class="action-btn" id="decisionContinueBtn">Continue Recording</button>
                 <div id="decisionCheckpointGroup">
@@ -573,9 +612,9 @@
     <!-- Toast Notifications -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="js/audio-viz.js?v=1.4.5"></script>
-    <script src="js/transcript.js?v=1.4.5"></script>
-    <script src="js/settings.js?v=1.4.5"></script>
-    <script src="js/app.js?v=1.4.5"></script>
+    <script src="js/audio-viz.js?v=1.5.0"></script>
+    <script src="js/transcript.js?v=1.5.0"></script>
+    <script src="js/settings.js?v=1.5.0"></script>
+    <script src="js/app.js?v=1.5.0"></script>
 </body>
 </html>

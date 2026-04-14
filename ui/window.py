@@ -32,7 +32,7 @@ def create_window(api_bridge, title: str = APP_WINDOW_TITLE, confirm_close: bool
         js_api=api_bridge,
         width=500,
         height=800,
-        min_size=(400, 700),
+        min_size=(400, 890),
         text_select=True,
         confirm_close=confirm_close,
     )

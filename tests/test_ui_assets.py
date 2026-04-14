@@ -33,8 +33,9 @@ def test_summary_actions_remain_available_during_post_transcription_upload():
     summary_state_start = app_js.index("function updateSummaryActionsState(scrollIntoView = false) {")
     summary_state_end = app_js.index("function applySummarizeButtonState(")
     summary_state_block = app_js[summary_state_start:summary_state_end]
-    assert "const summaryBlockedByCoreTranscription = transcriptionInProgress && !hasCompletedTranscription;" in summary_state_block
-    assert "(fiberyValidated || hasTranscript);" in summary_state_block
+    assert "applySummarizeButtonState(hasTranscript);" in summary_state_block
+    assert "copyTranscriptBtn.disabled = !hasTranscript || finalizeInProgress;" in summary_state_block
+    assert "copySummaryBtn.disabled = !generatedSummary || finalizeInProgress;" in summary_state_block
 
     transcribe_start = app_js.index("transcribeBtn.addEventListener('click', async () => {")
     transcribe_end = app_js.index("function formatAudioFileInfo(info) {")
@@ -94,11 +95,57 @@ def test_summary_language_toggle_defaults_to_english_and_is_session_scoped():
     assert "syncSummaryLanguageInputs('en');" in app_js
 
 
-def test_clear_button_is_available_for_staged_recordings_before_transcription():
+def test_header_tabs_and_recording_handoff_contract_exists():
+    index_html = (PROJECT_ROOT / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+    app_js = (PROJECT_ROOT / "ui" / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    bridge_py = (PROJECT_ROOT / "ui" / "api_bridge.py").read_text(encoding="utf-8")
+
+    assert 'id="mainTab"' in index_html
+    assert 'id="recordingTab"' in index_html
+    assert 'id="mainTabPanel"' in index_html
+    assert 'id="recordingTabPanel"' in index_html
+    assert 'recordingPanel' in index_html
+    assert 'id="goToRecordingBtn"' in index_html
+    assert 'id="stagedAudioInfo"' in index_html
+    assert 'id="stagedAudioName"' in index_html
+    assert 'id="stagedAudioMeta"' in index_html
+    assert 'id="clearStagedAudioBtn"' in index_html
+    assert "finalizeRecordingToMain(" in app_js
+    assert "handleFinalizeTimeout(" in app_js
+    assert "reconcileUiWithBackendState(" in app_js
+    assert "beginRecordingFinalizeToMain(" in app_js
+    assert "reset_session_keep_meeting" in bridge_py
+
+    new_meeting_btn_index = index_html.index('id="newMeetingBtn"')
+    meeting_panel_index = index_html.index('id="fiberyLinkPanel"')
+    assert new_meeting_btn_index < meeting_panel_index
+
+
+def test_staged_audio_clear_button_is_available_for_recordings_before_transcription():
     app_js = (PROJECT_ROOT / "ui" / "static" / "js" / "app.js").read_text(encoding="utf-8")
 
-    assert "clearUploadBtn.classList.toggle('hidden', !info.is_uploaded_file);" not in app_js
-    assert "clearUploadBtn.classList.remove('hidden');" in app_js
+    assert "clearUploadBtn" not in app_js
+    assert "clearStagedAudioBtn.classList.remove('hidden');" in app_js
+
+
+def test_recording_finalize_lock_guards_exist_for_tabs_and_timeouts():
+    app_js = (PROJECT_ROOT / "ui" / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    sync_start = app_js.index("function syncTabLockState() {")
+    sync_end = app_js.index("function setWorkflowControlsDisabled(")
+    sync_block = app_js[sync_start:sync_end]
+    assert "mainTab.disabled = isRecording || finalizeInProgress;" in sync_block
+    assert "recordingTab.disabled = finalizeInProgress;" in sync_block
+    assert "setActiveTab('recording', { force: true });" in sync_block
+    assert "setActiveTab('main', { force: true });" in sync_block
+
+    timeout_start = app_js.index("async function handleFinalizeTimeout() {")
+    timeout_end = app_js.index("mainTab.addEventListener('click', async () => {")
+    timeout_block = app_js[timeout_start:timeout_end]
+    assert "snapshot.state === 'recording'" in timeout_block
+    assert "snapshot.state === 'prepared' || snapshot.state === 'completed'" in timeout_block
+    assert "refreshFinalizeStatus()" in timeout_block
+    assert "finalizePollHandle = setInterval" in timeout_block
 
 
 def test_summarize_button_shows_elapsed_progress_during_long_requests():

@@ -490,6 +490,42 @@ class ApiBridge:
             logger.error('Failed to reset session: %s', e)
             return {'success': False, 'error': str(e)}
 
+    def get_session_snapshot(self) -> dict:
+        """Return backend session state for frontend reconciliation."""
+        try:
+            snapshot = self._app.get_session_snapshot()
+            return {"success": True, **snapshot}
+        except Exception as e:
+            logger.error("Failed to get session snapshot: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def reset_session_keep_meeting(self) -> dict:
+        """Reset workflow outputs while keeping the linked meeting context."""
+        try:
+            self._app.reset_session_keep_meeting()
+            return {"success": True}
+        except Exception as e:
+            logger.error("Failed to reset session while keeping meeting: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def stash_session_undo_snapshot(self, ttl_seconds: int = 15) -> dict:
+        """Stash the current workflow state so the next replacement can be undone."""
+        try:
+            result = self._app.stash_session_undo_snapshot(ttl_seconds)
+            return {"success": True, **result}
+        except Exception as e:
+            logger.error("Failed to stash undo snapshot: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def undo_session_replace(self) -> dict:
+        """Undo the most recent replacement workflow if still available."""
+        try:
+            snapshot = self._app.undo_session_replace()
+            return {"success": True, "snapshot": snapshot}
+        except Exception as e:
+            logger.error("Failed to undo session replace: %s", e)
+            return {"success": False, "error": str(e)}
+
     def create_fibery_meeting(self, meeting_type: str, name: str) -> dict:
         """Create a new meeting entity in Fibery."""
         try:

@@ -69,3 +69,86 @@ def test_generate_summary_forwards_summary_language(monkeypatch):
 
     assert result["success"] is True
     assert notifications == ['window.onSummarizeComplete({"success": true, "summary": "nl"})']
+
+
+def test_get_session_snapshot_wraps_backend_snapshot():
+    app = SimpleNamespace(
+        get_session_snapshot=lambda: {
+            "state": "prepared",
+            "prepared_audio": {"file_path": "meeting.wav"},
+            "has_linked_meeting": True,
+            "entity_name": "Weekly sync",
+            "entity_database": "Internal Meeting",
+            "undo_available": True,
+        }
+    )
+    bridge = ApiBridge(app)
+
+    result = bridge.get_session_snapshot()
+
+    assert result == {
+        "success": True,
+        "state": "prepared",
+        "prepared_audio": {"file_path": "meeting.wav"},
+        "has_linked_meeting": True,
+        "entity_name": "Weekly sync",
+        "entity_database": "Internal Meeting",
+        "undo_available": True,
+    }
+
+
+def test_reset_session_keep_meeting_forwards_to_app():
+    called = {"value": False}
+
+    def _reset():
+        called["value"] = True
+
+    bridge = ApiBridge(SimpleNamespace(reset_session_keep_meeting=_reset))
+
+    result = bridge.reset_session_keep_meeting()
+
+    assert result == {"success": True}
+    assert called["value"] is True
+
+
+def test_stash_session_undo_snapshot_forwards_ttl():
+    captured = {}
+
+    def _stash(ttl_seconds):
+        captured["ttl_seconds"] = ttl_seconds
+        return {"stored": True, "undo_available": True, "ttl_seconds": ttl_seconds}
+
+    bridge = ApiBridge(SimpleNamespace(stash_session_undo_snapshot=_stash))
+
+    result = bridge.stash_session_undo_snapshot(12)
+
+    assert result == {
+        "success": True,
+        "stored": True,
+        "undo_available": True,
+        "ttl_seconds": 12,
+    }
+    assert captured["ttl_seconds"] == 12
+
+
+def test_undo_session_replace_returns_restored_snapshot():
+    snapshot = {"state": "completed", "prepared_audio": {"file_path": "meeting.wav"}}
+    bridge = ApiBridge(SimpleNamespace(undo_session_replace=lambda: snapshot))
+
+    result = bridge.undo_session_replace()
+
+    assert result == {"success": True, "snapshot": snapshot}
+
+
+def test_undo_session_replace_returns_error_when_snapshot_expired():
+    def _undo():
+        raise RuntimeError("No replacement session is available to undo.")
+
+    bridge = ApiBridge(SimpleNamespace(undo_session_replace=_undo))
+
+    result = bridge.undo_session_replace()
+
+    assert result == {
+        "success": False,
+        "error": "No replacement session is available to undo.",
+    }
