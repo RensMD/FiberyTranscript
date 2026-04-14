@@ -1599,6 +1599,53 @@ class TestRecordingBackgroundScanning:
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_batch_processing_skips_gemini_cleanup_when_context_improvement_disabled(self):
+        from app import TranscriptionOptions
+
+        root = _make_test_root("test_batch_processing_skips_gemini_cleanup")
+        try:
+            app = _make_app(
+                settings=Settings(
+                    display_name="Test",
+                    audio_transcript_cleanup_enabled=True,
+                ),
+                data_dir=root / "appdata",
+            )
+            app.state = app.STATE_PROCESSING
+            app._resume_background_scanning = MagicMock()
+            app._notify_js = MagicMock()
+            session = RecordingSession(SessionContext(wav_path=str(root / "meeting.wav")))
+
+            result = {
+                "utterances": [{"speaker": "A", "text": "Hello", "start": 0, "end": 1000}],
+                "full_text": "Hello",
+                "language": "en",
+                "audio_path": str(root / "meeting.ogg"),
+            }
+            (root / "meeting.ogg").write_bytes(b"ogg")
+
+            def _get_key(name):
+                if name == "assemblyai_api_key":
+                    return "assembly-key"
+                if name == "gemini_api_key":
+                    return "gemini-key"
+                return ""
+
+            with patch("app.get_key", side_effect=_get_key):
+                with patch("transcription.batch.transcribe_with_diarization", return_value=result):
+                    with patch("integrations.gemini_client.cleanup_transcript") as cleanup:
+                        app._run_batch_processing(
+                            session,
+                            TranscriptionOptions(improve_with_context=False),
+                        )
+
+            cleanup.assert_not_called()
+            assert session.results.get_cleaned_transcript() == "**Speaker A**\nHello"
+            messages = [call.args[0] for call in app._notify_js.call_args_list]
+            assert "window.onCleanupFailed()" not in messages
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
     def test_batch_processing_logs_and_passes_curated_keyterms(self, caplog):
         root = _make_test_root("test_batch_processing_logs_keyterms")
         try:

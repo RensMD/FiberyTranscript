@@ -103,7 +103,6 @@ let undoSnapshotVersion = 0;
 let stagedAudioCardMode = 'idle';
 let stagedAudioCardName = '';
 let stagedAudioCardMeta = '';
-const IMPROVE_TRANSCRIPT_WITH_CONTEXT = true;
 
 // --- DOM elements ---
 const mainTab = document.getElementById('mainTab');
@@ -271,6 +270,11 @@ function setWorkflowControlsDisabled(disabled) {
             }
         }
     });
+
+    // Re-assert name-gated disabled state for create-meeting buttons after unlock
+    if (!disabled) {
+        updateCreateMeetingButtons();
+    }
 }
 
 function renderMainAudioCardState() {
@@ -717,6 +721,28 @@ function getSelectedTranscriptMode() {
     return selected ? selected.value : 'append';
 }
 
+function getSelectedTranscriptContextImprovement() {
+    const selected = document.querySelector('input[name="transcriptContextImprovement"]:checked');
+    return selected ? selected.value === 'yes' : false;
+}
+
+function syncTranscriptContextImprovementInputs(value) {
+    const normalized = value === true || value === 'yes';
+    const radio = document.getElementById(
+        normalized ? 'improveTranscriptContextYes' : 'improveTranscriptContextNo'
+    );
+    if (radio) radio.checked = true;
+}
+
+function getTranscriptContextImprovementDefault(database = currentEntityDb) {
+    const normalizedDb = String(database || '').trim().toLowerCase();
+    return normalizedDb === 'external meeting' || normalizedDb === 'market interview';
+}
+
+function applyTranscriptContextImprovementDefault(database = currentEntityDb) {
+    syncTranscriptContextImprovementInputs(getTranscriptContextImprovementDefault(database));
+}
+
 function getSelectedRecordingMode() {
     const selected = document.querySelector('input[name="recordingMode"]:checked');
     return selected ? selected.value : 'mic_only';
@@ -923,7 +949,7 @@ transcribeBtn.addEventListener('click', async () => {
     try {
         const result = await window.pywebview.api.start_transcription(
             false,
-            IMPROVE_TRANSCRIPT_WITH_CONTEXT,
+            getSelectedTranscriptContextImprovement(),
             getSelectedTranscriptMode(),
             getSelectedRecordingMode(),
         );
@@ -1123,7 +1149,8 @@ window.onPanelUrlChanged = function(url) {
 function updateCreateMeetingButtons() {
     const hasName = createMeetingName.value.trim().length > 0;
     document.querySelectorAll('.create-meeting-btn').forEach((button) => {
-        button.disabled = !hasName;
+        // Interview button is always available; others require a name
+        button.disabled = button.dataset.type === 'interview' ? false : !hasName;
     });
 }
 
@@ -1242,6 +1269,7 @@ function applyLinkedEntity(result, entityUrl) {
     currentFiberyUrl = entityUrl || result.url || panelCurrentUrl || '';
     currentEntityUrl = result.url || entityUrl || panelCurrentUrl || '';
     currentEntityDb = result.database || '';
+    applyTranscriptContextImprovementDefault(currentEntityDb);
     linkedTranscriptText = result.transcript_text || '';
     fiberyDisambiguation.classList.add('hidden');
     fiberyMissingWarning.classList.add('hidden');
@@ -1346,7 +1374,7 @@ async function selectMeetingFromPanel() {
                 disambigOptions.appendChild(btn);
             });
         } else {
-            setFiberyValidateStatus('Not a valid meeting: ' + (result.error || 'Unknown'), 'error');
+            setFiberyValidateStatus('Not valid: ' + (result.error || 'Unknown'), 'error');
         }
     } catch (err) {
         setFiberyValidateStatus('Error: ' + err, 'error');
@@ -1415,6 +1443,7 @@ function resetFiberyValidation() {
     currentFiberyUrl = '';
     currentEntityUrl = '';
     currentEntityDb = '';
+    applyTranscriptContextImprovementDefault('');
     linkedTranscriptText = '';
     fiberyEntityInfo.classList.add('hidden');
     problemsRow.classList.add('hidden');
@@ -2432,7 +2461,7 @@ retryBatchBtn.addEventListener('click', async () => {
         const result = await callApi(
             'start_transcription',
             false,
-            IMPROVE_TRANSCRIPT_WITH_CONTEXT,
+            getSelectedTranscriptContextImprovement(),
             getSelectedTranscriptMode(),
             getSelectedRecordingMode(),
         );

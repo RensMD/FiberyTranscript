@@ -54,7 +54,7 @@ def test_summary_actions_remain_available_during_post_transcription_upload():
     assert "updateSummaryActionsState();" in upload_error_block
 
 
-def test_transcribe_controls_layout_is_inline_and_always_uses_context_improvement():
+def test_transcribe_controls_layout_is_inline_and_uses_context_toggle():
     index_html = (PROJECT_ROOT / "ui" / "static" / "index.html").read_text(encoding="utf-8")
     app_js = (PROJECT_ROOT / "ui" / "static" / "js" / "app.js").read_text(encoding="utf-8")
     settings_js = (PROJECT_ROOT / "ui" / "static" / "js" / "settings.js").read_text(encoding="utf-8")
@@ -63,8 +63,12 @@ def test_transcribe_controls_layout_is_inline_and_always_uses_context_improvemen
     assert 'class="option-row"' in index_html
     assert 'id="recordingModeMicOnly"' in index_html
     assert 'id="recordingModeMicAndSpeakers"' in index_html
+    assert 'id="improveTranscriptContextNo"' in index_html
+    assert 'id="improveTranscriptContextYes"' in index_html
     assert "option-row" in styles_css
-    assert "IMPROVE_TRANSCRIPT_WITH_CONTEXT = true" in app_js
+    assert "IMPROVE_TRANSCRIPT_WITH_CONTEXT = true" not in app_js
+    assert "function getSelectedTranscriptContextImprovement()" in app_js
+    assert "function applyTranscriptContextImprovementDefault(database = currentEntityDb)" in app_js
     assert "advancedTranscriptCard" not in index_html
     assert "advancedTranscriptCard" not in app_js
     assert "advanced-transcript-card" not in styles_css
@@ -77,12 +81,24 @@ def test_transcribe_controls_layout_is_inline_and_always_uses_context_improvemen
     assert "echoCancellationEnabled" in settings_js
     assert "function getSelectedRecordingMode()" in app_js
     assert "window.pywebview.api.set_recording_mode(value);" in app_js
+    assert "getSelectedTranscriptContextImprovement()," in app_js
 
     recording_toggle_index = index_html.index('id="recordingModeMicOnly"')
+    context_toggle_index = index_html.index('id="improveTranscriptContextNo"')
     transcript_toggle_index = index_html.index('id="modeAppend"')
     transcribe_btn_index = index_html.index('id="transcribeBtn"')
+    assert recording_toggle_index < context_toggle_index
+    assert context_toggle_index < transcript_toggle_index
     assert recording_toggle_index < transcript_toggle_index
     assert transcript_toggle_index < transcribe_btn_index
+
+    transcribe_start = app_js.index("transcribeBtn.addEventListener('click', async () => {")
+    retry_start = app_js.index("retryBatchBtn.addEventListener('click', async () => {")
+    retry_end = app_js.index("// === Transcript Actions ===")
+    transcribe_block = app_js[transcribe_start:retry_start]
+    retry_block = app_js[retry_start:retry_end]
+    assert "getSelectedTranscriptContextImprovement()," in transcribe_block
+    assert "getSelectedTranscriptContextImprovement()," in retry_block
 
 
 def test_summary_language_toggle_defaults_to_english_and_is_session_scoped():
