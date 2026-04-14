@@ -121,7 +121,7 @@ def test_start_includes_hour_and_minute_and_uses_counter_within_same_minute():
             second_path = second.start()
             second.stop()
 
-        assert first_path.name == "2026-04-14_09_30_Weekly-sync.wav"
-        assert second_path.name == "2026-04-14_09_30_Weekly-sync_2.wav"
+        assert first_path.name == "20260414_0930_Weekly-sync.wav"
+        assert second_path.name == "20260414_0930_Weekly-sync_2.wav"
     finally:
         shutil.rmtree(root, ignore_errors=True)

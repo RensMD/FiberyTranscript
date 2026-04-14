@@ -270,8 +270,8 @@ class FiberyTranscriptApp:
         """Return a non-conflicting destination path inside recordings_dir.
 
         Naming convention:
-        - Recording:  yyyy-mm-dd_hh_mm_[meeting-name]_[#].ext
-        - Copy:       yyyy-mm-dd_hh_mm_[meeting-name]_[original-name]_[#].ext
+        - Recording:  yyyymmdd_hhmm_[meeting-name]_[#].ext
+        - Copy:       yyyymmdd_hhmm_[meeting-name]_[original-name]_[#].ext
         - Copy with existing convention: reuse source stem, iterate #
         """
         name = meeting_name or "recording"

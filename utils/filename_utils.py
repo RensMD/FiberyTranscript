@@ -8,10 +8,10 @@ WINDOWS_SAFE_PATH_LIMIT = 240
 MIN_STEM_LENGTH = 32
 FILENAME_HEADROOM = len("_mono_input") + len("_2147483647") + len(".flac")
 
-# Accept both the current yyyy-mm-dd_hh_mm_ prefix and the older date-only form.
-RECORDING_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:_\d{2}_\d{2})?_")
+# Accept current yyyymmdd_hhmm_, legacy yyyy-mm-dd_hh_mm_ / yyyy-mm-dd_hh-mm_, and older date-only form.
+RECORDING_PREFIX_RE = re.compile(r"^(?:\d{8}|\d{4}-\d{2}-\d{2})(?:_\d{2,4}[-_]?\d{0,2})?_")
 PLACEHOLDER_RECORDING_STEM_RE = re.compile(
-    r"^(?P<merged>merged_)?(?P<prefix>\d{4}-\d{2}-\d{2}(?:_\d{2}_\d{2})?)_recording(?P<counter>_\d+)?$"
+    r"^(?P<merged>merged_)?(?P<prefix>(?:\d{8}|\d{4}-\d{2}-\d{2})(?:_\d{2,4}[-_]?\d{0,2})?)_recording(?P<counter>_\d+)?$"
 )
 
 
@@ -41,9 +41,9 @@ def truncate_stem_for_directory(stem: str, directory: Path, suffix: str) -> str:
 
 
 def build_recording_stem(name: str = "", *, now: datetime | None = None) -> str:
-    """Build the default recording stem using yyyy-mm-dd_hh_mm and a sanitized name."""
+    """Build the default recording stem using yyyymmdd_hhmm and a sanitized name."""
     moment = now or datetime.now()
-    prefix = moment.strftime("%Y-%m-%d_%H_%M")
+    prefix = moment.strftime("%Y%m%d_%H%M")
     safe_name = sanitize_name(name) if name else "recording"
     return f"{prefix}_{safe_name}"
 

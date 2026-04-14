@@ -538,8 +538,8 @@ class TestMeetingMetadata:
             entity = SimpleNamespace(space="General", database="Internal Meeting", entity_name="Weekly sync", uuid="entity-b")
             recordings_dir = app.data_dir / "recordings"
             recordings_dir.mkdir(parents=True, exist_ok=True)
-            wav_path = recordings_dir / "2026-04-14_09_30_recording.wav"
-            ogg_path = recordings_dir / "2026-04-14_09_30_recording.ogg"
+            wav_path = recordings_dir / "20260414_0930_recording.wav"
+            ogg_path = recordings_dir / "20260414_0930_recording.ogg"
             wav_path.write_bytes(b"wav")
             ogg_path.write_bytes(b"ogg")
             app._session = RecordingSession(SessionContext(
@@ -561,8 +561,8 @@ class TestMeetingMetadata:
 
             result = app.start_transcription()
 
-            renamed_wav = recordings_dir / "2026-04-14_09_30_Weekly-sync.wav"
-            renamed_ogg = recordings_dir / "2026-04-14_09_30_Weekly-sync.ogg"
+            renamed_wav = recordings_dir / "20260414_0930_Weekly-sync.wav"
+            renamed_ogg = recordings_dir / "20260414_0930_Weekly-sync.ogg"
             assert result["success"] is True
             assert not wav_path.exists()
             assert not ogg_path.exists()
@@ -587,7 +587,7 @@ class TestMeetingMetadata:
             app.audio_capture.is_capturing.return_value = False
             recordings_dir = app.data_dir / "recordings"
             recordings_dir.mkdir(parents=True, exist_ok=True)
-            wav_path = recordings_dir / "merged_2026-04-14_09_30_recording.wav"
+            wav_path = recordings_dir / "merged_20260414_0930_recording.wav"
             wav_path.write_bytes(b"wav")
             app._session = RecordingSession(SessionContext(
                 wav_path=str(wav_path),
@@ -607,7 +607,7 @@ class TestMeetingMetadata:
 
             result = app.start_transcription()
 
-            renamed_wav = recordings_dir / "merged_2026-04-14_09_30_Market-interview.wav"
+            renamed_wav = recordings_dir / "merged_20260414_0930_Market-interview.wav"
             assert result["success"] is True
             assert not wav_path.exists()
             assert renamed_wav.exists()
@@ -624,12 +624,12 @@ class TestMeetingMetadata:
             app.audio_capture.is_capturing.return_value = False
             recordings_dir = app.data_dir / "recordings"
             recordings_dir.mkdir(parents=True, exist_ok=True)
-            wav_path = recordings_dir / "2026-04-14_09_30_recording.wav"
-            ogg_path = recordings_dir / "2026-04-14_09_30_recording.ogg"
+            wav_path = recordings_dir / "20260414_0930_recording.wav"
+            ogg_path = recordings_dir / "20260414_0930_recording.ogg"
             wav_path.write_bytes(b"wav")
             ogg_path.write_bytes(b"ogg")
-            (recordings_dir / "2026-04-14_09_30_Weekly-sync.wav").write_bytes(b"other-wav")
-            (recordings_dir / "2026-04-14_09_30_Weekly-sync.ogg").write_bytes(b"other-ogg")
+            (recordings_dir / "20260414_0930_Weekly-sync.wav").write_bytes(b"other-wav")
+            (recordings_dir / "20260414_0930_Weekly-sync.ogg").write_bytes(b"other-ogg")
             app._session = RecordingSession(SessionContext(
                 wav_path=str(wav_path),
                 compressed_path=str(ogg_path),
@@ -648,8 +648,8 @@ class TestMeetingMetadata:
 
             result = app.start_transcription()
 
-            renamed_wav = recordings_dir / "2026-04-14_09_30_Weekly-sync_2.wav"
-            renamed_ogg = recordings_dir / "2026-04-14_09_30_Weekly-sync_2.ogg"
+            renamed_wav = recordings_dir / "20260414_0930_Weekly-sync_2.wav"
+            renamed_ogg = recordings_dir / "20260414_0930_Weekly-sync_2.ogg"
             assert result["success"] is True
             assert renamed_wav.exists()
             assert renamed_ogg.exists()
@@ -668,9 +668,9 @@ class TestMeetingMetadata:
             app.audio_capture.is_capturing.return_value = False
             recordings_dir = app.data_dir / "recordings"
             recordings_dir.mkdir(parents=True, exist_ok=True)
-            wav_path = recordings_dir / "2026-04-14_09_30_recording.wav"
+            wav_path = recordings_dir / "20260414_0930_recording.wav"
             wav_path.write_bytes(b"wav")
-            orphan_ogg = recordings_dir / "2026-04-14_09_30_Weekly-sync.ogg"
+            orphan_ogg = recordings_dir / "20260414_0930_Weekly-sync.ogg"
             orphan_ogg.write_bytes(b"orphan-ogg")
             app._session = RecordingSession(SessionContext(
                 wav_path=str(wav_path),
@@ -690,7 +690,7 @@ class TestMeetingMetadata:
 
             result = app.start_transcription()
 
-            renamed_wav = recordings_dir / "2026-04-14_09_30_Weekly-sync.wav"
+            renamed_wav = recordings_dir / "20260414_0930_Weekly-sync.wav"
             assert result["success"] is True
             assert renamed_wav.exists()
             assert orphan_ogg.exists()
@@ -706,7 +706,7 @@ class TestMeetingMetadata:
             app = _make_app(data_dir=root / "appdata")
             app.audio_capture = MagicMock()
             app.audio_capture.is_capturing.return_value = False
-            wav_path = root / "2026-04-14_09_30_recording.wav"
+            wav_path = root / "20260414_0930_recording.wav"
             wav_path.write_bytes(b"wav")
             app._session = RecordingSession(SessionContext(
                 wav_path=str(wav_path),
@@ -739,7 +739,7 @@ class TestMeetingMetadata:
             app.audio_capture.is_capturing.return_value = False
             recordings_dir = app.data_dir / "recordings"
             recordings_dir.mkdir(parents=True, exist_ok=True)
-            wav_path = recordings_dir / "2026-04-14_09_30_Weekly-sync.wav"
+            wav_path = recordings_dir / "20260414_0930_Weekly-sync.wav"
             wav_path.write_bytes(b"wav")
             app._session = RecordingSession(SessionContext(
                 wav_path=str(wav_path),
@@ -772,8 +772,8 @@ class TestMeetingMetadata:
             app.audio_capture.is_capturing.return_value = False
             recordings_dir = app.data_dir / "recordings"
             recordings_dir.mkdir(parents=True, exist_ok=True)
-            wav_path = recordings_dir / "2026-04-14_09_30_recording.wav"
-            ogg_path = recordings_dir / "2026-04-14_09_30_recording.ogg"
+            wav_path = recordings_dir / "20260414_0930_recording.wav"
+            ogg_path = recordings_dir / "20260414_0930_recording.ogg"
             wav_path.write_bytes(b"wav")
             ogg_path.write_bytes(b"ogg")
             app._session = RecordingSession(SessionContext(
@@ -978,7 +978,7 @@ class TestUploadedFileStaging:
 
             staged = Path(app._session.context.wav_path)
             assert staged.parent == app.data_dir / "recordings"
-            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_recording_meeting\.mp3", staged.name)
+            assert re.fullmatch(r"\d{8}_\d{4}_recording_meeting\.mp3", staged.name)
             assert staged.read_bytes() == b"audio-data"
             assert source.exists()
             assert app._session.context.compressed_path == str(staged)
@@ -1016,7 +1016,7 @@ class TestUploadedFileStaging:
 
             staged = Path(app._session.context.wav_path)
             assert staged.parent == app.data_dir / "recordings"
-            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_recording_meeting\.m4a", staged.name)
+            assert re.fullmatch(r"\d{8}_\d{4}_recording_meeting\.m4a", staged.name)
             assert staged.read_bytes() == source.read_bytes()
             assert app._session.context.compressed_path == str(staged)
             assert app._prepared_audio_info["file_name"] == staged.name
@@ -1247,7 +1247,7 @@ class TestRecorderLifecycle:
 
             staged = Path(app._session.context.wav_path)
             assert staged.parent == recordings_dir
-            assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}_\d{2}_recording_meeting\.wav", staged.name)
+            assert re.fullmatch(r"\d{8}_\d{4}_recording_meeting\.wav", staged.name)
             assert staged.read_bytes() == b"wav-data"
             assert app._session.context.compressed_path == ""
             thread_cls.return_value.start.assert_called_once_with()
