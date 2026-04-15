@@ -3092,9 +3092,16 @@ class FiberyTranscriptApp:
             return {'success': False, 'error': f'Unknown meeting type: {meeting_type}'}
 
         type_info = self.MEETING_TYPES[meeting_type]
+        name = (name or "").strip()
 
         if not name:
-            return {'success': False, 'error': 'Meeting name is required'}
+            if meeting_type != "interview":
+                return {'success': False, 'error': 'Meeting name is required'}
+
+            # Market Interview names are formula-generated in Fibery, so send a
+            # unique placeholder when the user intentionally leaves the field blank.
+            import uuid as uuid_mod
+            name = f"Interview placeholder {uuid_mod.uuid4().hex[:8]}"
 
         # Block before creating the entity to avoid orphans in Fibery
         if self.state == self.STATE_PROCESSING:

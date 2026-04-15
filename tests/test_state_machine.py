@@ -444,7 +444,7 @@ class TestMeetingMetadata:
         assert result["transcript_text"] == ""
         assert app._linked_transcript_text == ""
 
-    @pytest.mark.parametrize("meeting_type", ["internal", "external", "interview"])
+    @pytest.mark.parametrize("meeting_type", ["internal", "external"])
     def test_create_fibery_meeting_requires_name_when_blank(self, meeting_type):
         app = _make_app()
         client = MagicMock()
@@ -455,6 +455,31 @@ class TestMeetingMetadata:
 
         assert result == {"success": False, "error": "Meeting name is required"}
         client.create_entity.assert_not_called()
+
+    def test_create_fibery_meeting_allows_blank_interview_name_with_placeholder(self):
+        app = _make_app()
+        entity = SimpleNamespace(
+            entity_name="Autocomposed interview name",
+            database="Market Interview",
+            space="Market",
+            internal_id="456",
+            uuid="uuid-123",
+        )
+        client = MagicMock()
+        client.create_entity.return_value = entity
+        client.get_entity_url.return_value = "https://example.fibery.io/Market/Market_Interview/autocomposed-interview-name-456"
+
+        with patch("app.get_key", return_value="fibery-key"):
+            with patch("integrations.fibery_client.FiberyClient", return_value=client):
+                result = app.create_fibery_meeting("interview", "   ")
+
+        assert result["success"] is True
+        assert result["entity_name"] == "Autocomposed interview name"
+        client.create_entity.assert_called_once()
+        create_call = client.create_entity.call_args.kwargs
+        assert create_call["space"] == "Market"
+        assert create_call["database"] == "Market/Market Interview"
+        assert create_call["name"].startswith("Interview placeholder ")
 
     def test_check_problems_ready_reports_existing_problem_sources(self):
         app = _make_app()
