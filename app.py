@@ -2196,31 +2196,56 @@ class FiberyTranscriptApp:
         return None
 
     def _find_device_by_name(self, name: str, is_loopback: bool) -> Optional[AudioDevice]:
-        """Resolve a device by exact name match. Returns None otherwise.
+        """Resolve a device by exact name match. Returns None when not found.
 
-        Substring match and OS-default fallback were deliberately removed:
-        both can silently swap the recorded source to a different physical
-        device (adversarial review found this as a source-integrity /
-        privacy regression). If the configured device is gone the caller
-        surfaces it as a device-lost event — the surviving source keeps
-        recording, and if both are gone the wake-resume flow surfaces an
-        error popup rather than guessing.
+        Safety properties, in order:
+          1. Exact match only. No substring or OS-default fallback — those
+             can silently swap the recorded source to a different physical
+             device.
+          2. If two or more devices share the exact name, returns None.
+             Without a backend-stable endpoint ID we cannot disambiguate,
+             and guessing can record from the wrong physical input.
+          3. Transient enumeration errors propagate as exceptions. A short
+             retry loop papers over one-off sounddevice / PortAudio hiccups,
+             but persistent failures are re-raised so the caller distinguishes
+             "backend temporarily unavailable, try again later" from
+             "device definitively gone" — the former must NOT clear the
+             saved device name the way the latter does.
         """
         list_fn = (
             self.audio_capture.list_loopback_devices
             if is_loopback
             else self.audio_capture.list_input_devices
         )
-        try:
-            devices = list_fn()
-        except Exception as e:
-            logger.warning("Device list failed during name lookup: %s", e)
+
+        last_err = None
+        devices: Optional[list] = None
+        for attempt in range(3):
+            try:
+                devices = list_fn()
+                break
+            except Exception as e:
+                last_err = e
+                logger.debug(
+                    "Device enumeration attempt %d for %r failed: %s",
+                    attempt + 1, name, e,
+                )
+                time.sleep(0.2 * (attempt + 1))
+        if devices is None:
+            raise RuntimeError(
+                f"Device enumeration failed for {name!r}: {last_err}"
+            ) from last_err
+
+        matches = [d for d in devices if d.name == name]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logger.warning(
+                "Device name %r matches %d devices; refusing to guess "
+                "which physical endpoint to use",
+                name, len(matches),
+            )
             return None
-
-        for dev in devices:
-            if dev.name == name:
-                return dev
-
         logger.warning(
             "Device %r not found; refusing silent fallback to another source",
             name,
@@ -2763,13 +2788,24 @@ class FiberyTranscriptApp:
         # the surviving side, notify the user, and stop if both are gone.
         wanted_mic_name = self._selected_mic_name
         wanted_loopback_name = self._selected_loopback_name
-        mic_device = (
-            self._find_device_by_name(wanted_mic_name, is_loopback=False)
-            if wanted_mic_name else None
-        )
-        loopback_device = (
-            self._find_device_by_name(wanted_loopback_name, is_loopback=True)
-            if wanted_loopback_name else None
+
+        def _resolve(name: Optional[str], is_loopback: bool):
+            """Return (device, status). status ∈ {'unset','ok','missing','transient'}."""
+            if not name:
+                return None, "unset"
+            try:
+                dev = self._find_device_by_name(name, is_loopback=is_loopback)
+            except Exception as e:
+                logger.warning(
+                    "Transient device enumeration failure on wake for %r: %s",
+                    name, e,
+                )
+                return None, "transient"
+            return dev, ("ok" if dev else "missing")
+
+        mic_device, mic_status = _resolve(wanted_mic_name, is_loopback=False)
+        loopback_device, loopback_status = _resolve(
+            wanted_loopback_name, is_loopback=True
         )
 
         if mic_device:
@@ -2777,9 +2813,19 @@ class FiberyTranscriptApp:
         if loopback_device:
             self._selected_sys_index = loopback_device.index
 
-        # Surface any missing-configured-source so the user knows which side
-        # was dropped. Cleared names prevent future wake cycles from retrying.
-        if wanted_mic_name and not mic_device:
+        # Transient backend failure: raise to let the wake-resume-failed
+        # flow finalize the recording up to sleep cleanly. Must NOT clear
+        # the saved device name — the device is presumed still connected.
+        if mic_status == "transient" or loopback_status == "transient":
+            raise RuntimeError(
+                "Audio backend unavailable after wake; try again later"
+            )
+
+        # Definitive miss (device gone OR ambiguous duplicate-name) — treat
+        # as Phase 2.1 device-lost: clear the stored name so future wakes
+        # don't keep retrying, surface a toast, and continue with the
+        # surviving side if any.
+        if mic_status == "missing":
             self._selected_mic_name = None
             self._record_gap(source="mic", reason=f"wake_unresolved:{wanted_mic_name}")
             self._notify_js(
@@ -2788,7 +2834,7 @@ class FiberyTranscriptApp:
                     "continuing without it."
                 ) + ", 'warning', 9000)"
             )
-        if wanted_loopback_name and not loopback_device:
+        if loopback_status == "missing":
             self._selected_loopback_name = None
             self._record_gap(
                 source="loopback",
