@@ -32,13 +32,12 @@ except ImportError:
 
 _SENTINEL = None  # Poison pill for OGG writer thread
 
-# Header refresh cadence: every 30s an off-path worker rewrites the WAV header
-# so a crash/power-fail leaves a playable file up to the last tick.
-_WAV_HEADER_REFRESH_SECONDS = 30.0
-# 32-bit WAV header size ceiling (riff_size field). Above this we stop
-# refreshing — the wave module's own close() will produce a valid header
-# up to its own limit.
-_WAV_HEADER_SIZE_LIMIT = 0xFFFFFFFF - 36
+# Durability cadence: every 30s the worker flushes the wave writer's Python
+# buffer into the kernel and fsyncs to force page cache out to disk. The
+# header itself is kept current by wave.writeframes() on every chunk, so
+# we do NOT need to write the header from the worker — this used to be a
+# source of cross-handle races that could torn or stale-ify the header.
+_WAV_DURABILITY_REFRESH_SECONDS = 30.0
 
 
 class WavRecorder:
@@ -109,11 +108,11 @@ class WavRecorder:
         self._wav_file.setsampwidth(2)  # 16-bit
         self._wav_file.setframerate(self._sample_rate)
 
-        # Spawn the header-refresh worker. Uses its own r+b handle so the
-        # seek never touches the wave module's writer (which sits on a
-        # separate fd). Two handles are safe: the worker only touches bytes
-        # 0-44 (header); wave.writeframes only appends to the data section.
-        # See _header_refresh_loop for the durability argument.
+        # Spawn the durability-refresh worker — it periodically flushes
+        # the wave writer's Python buffer and fsyncs the wave fd so a
+        # crash can recover up to the last tick. It does NOT write the
+        # header itself; wave.writeframes() keeps the header current.
+        # See _header_refresh_loop for the rationale.
         self._header_refresh_stop.clear()
         self._header_refresh_thread = threading.Thread(
             target=self._header_refresh_loop,
@@ -162,16 +161,16 @@ class WavRecorder:
         """
         with self._lock:
             if self._wav_file and pcm_data:
-                # writeframesraw — NOT writeframes. CPython's writeframes
-                # calls _patchheader after every chunk, rewriting bytes 4-7
-                # and 40-43. Because the crash-safe header refresher rewrites
-                # the same bytes from a second handle, using writeframes
-                # here races the refresher and can leave a torn or stale
-                # header at crash time. writeframesraw only appends to the
-                # data section; the refresher becomes the sole header
-                # updater during recording, and wave.close() in stop()
-                # finalizes the header serially after the refresher joins.
-                self._wav_file.writeframesraw(pcm_data)
+                # writeframes() — wave auto-patches bytes 4-7 and 40-43
+                # after every chunk, so the header stays current from the
+                # first chunk onwards. Using writeframesraw() here would
+                # leave a header claiming only the first-chunk size until
+                # the periodic flush runs, so an early crash could strand
+                # almost an entire short segment behind a stale header.
+                # The header-refresh worker is now pure-durability (flush
+                # + fsync, no header writes) so wave is the SOLE header
+                # writer during recording — no cross-handle race.
+                self._wav_file.writeframes(pcm_data)
 
         # Queue for background OGG processing (non-blocking)
         if self._ogg_queue is not None and pcm_data:
@@ -188,80 +187,51 @@ class WavRecorder:
                     )
 
     def _header_refresh_loop(self) -> None:
-        """Rewrite WAV header every 30s so a crash leaves a playable file.
+        """Periodically persist the WAV so a crash leaves a playable file.
 
-        Single-writer invariant: during recording, ONLY this worker writes
-        to the RIFF-size and data-size fields. The audio hot path uses
-        wave.Wave_write.writeframesraw() (not writeframes()), so writeframes
-        cannot race the refresher on bytes 4-7 / 40-43. wave.close() in
-        stop() is the only other header writer, and it runs serially after
-        this worker is joined.
+        This worker does NOT write the RIFF / data-size fields itself —
+        wave.writeframes() already patches them on every chunk, so the
+        header is always current in userspace. A separate-handle header
+        writer was previously used for off-path fsync, but it introduced
+        two subtle failure modes:
+          (a) Race with wave._patchheader on bytes 4-7 / 40-43 — torn or
+              stale writes at crash time.
+          (b) On an early crash, the header could claim audio that had
+              not yet been flushed past the wave writer's Python buffer
+              (the original bug Codex flagged for the in-memory counter
+              variant of this worker).
 
-        Durability argument:
-          1. Flush the wave writer's Python buffer into the kernel
-             (briefly under _lock so it doesn't race with writeframesraw).
-          2. Read the authoritative on-disk data length via
-             os.fstat(handle.fileno()).st_size — once the kernel has the
-             bytes, any handle referencing the same inode sees the new
-             size, and the header can never claim more bytes than have
-             actually left userspace.
-          3. Write the header on our handle, flush, and fsync. fsync on
-             any fd for the inode persists all dirty pages for the file
-             on both Linux and Windows (sync_file_range /
-             FlushFileBuffers), so one fsync covers both the header bytes
-             we just wrote and audio bytes already in the kernel.
+        New design: the audio path is the single header writer (via
+        wave.writeframes()). This worker only:
+          1. Briefly acquires _lock and calls _wav_file._file.flush() to
+             push anything the wave writer is still buffering in
+             userspace out to the kernel. Very fast.
+          2. Releases _lock and calls os.fsync() on the wave writer's fd
+             to persist both header and data pages to disk.
+
+        fsync on one fd for the inode persists all dirty pages for the
+        file on both Linux (sync_file_range semantics) and Windows
+        (FlushFileBuffers), so we do not need a second handle.
         """
-        if self._file_path is None:
-            return
-        try:
-            handle = open(self._file_path, "r+b")
-        except OSError as e:
-            logger.warning("Header refresh: could not open handle: %s", e)
-            return
-        try:
-            while not self._header_refresh_stop.wait(_WAV_HEADER_REFRESH_SECONDS):
-                # Push the wave writer's Python buffer into the kernel so
-                # the file size reflects everything the recorder has
-                # committed. _lock is held only for this flush call.
-                with self._lock:
-                    if self._wav_file is None:
-                        continue  # recorder stopped between ticks
-                    try:
-                        self._wav_file._file.flush()
-                    except Exception as e:
-                        logger.debug("wav flush during header refresh: %s", e)
-                        continue
-
+        while not self._header_refresh_stop.wait(_WAV_DURABILITY_REFRESH_SECONDS):
+            fd: Optional[int] = None
+            with self._lock:
+                if self._wav_file is None:
+                    continue  # recorder stopped between ticks
                 try:
-                    total_size = os.fstat(handle.fileno()).st_size
-                except OSError as e:
-                    logger.warning("Header refresh fstat failed: %s", e)
+                    self._wav_file._file.flush()
+                    fd = self._wav_file._file.fileno()
+                except Exception as e:
+                    logger.debug("wav flush during durability refresh: %s", e)
                     continue
-
-                if total_size < 44:
-                    continue  # wave header not yet emitted
-                data_size = total_size - 44
-                if data_size > _WAV_HEADER_SIZE_LIMIT:
-                    logger.warning(
-                        "Recording exceeds 4GB WAV header limit; skipping refresh"
-                    )
-                    continue
-
-                riff_size = 36 + data_size
-                try:
-                    handle.seek(4)
-                    handle.write(riff_size.to_bytes(4, "little"))
-                    handle.seek(40)
-                    handle.write(data_size.to_bytes(4, "little"))
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                except OSError as e:
-                    logger.warning("WAV header refresh failed: %s", e)
-        finally:
+            # fsync outside _lock — can take tens of ms on spinning disks
+            # and must not block writeframes on the audio path.
+            if fd is None:
+                continue
             try:
-                handle.close()
-            except OSError:
-                pass
+                os.fsync(fd)
+            except OSError as e:
+                logger.warning("WAV fsync failed: %s", e)
 
     def _ogg_writer_loop(self, ogg_file) -> None:
         """Background thread: process and write OGG chunks.

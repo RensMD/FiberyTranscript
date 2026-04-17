@@ -2199,7 +2199,6 @@ class FiberyTranscriptApp:
         self,
         name: str,
         is_loopback: bool,
-        expected_index: Optional[int] = None,
     ) -> Optional[AudioDevice]:
         """Resolve a device by exact name match. Returns None when ambiguous/missing.
 
@@ -2207,14 +2206,15 @@ class FiberyTranscriptApp:
           1. Exact match only. No substring or OS-default fallback — those
              can silently swap the recorded source to a different physical
              device.
-          2. If two or more devices share the exact name, prefer the one
-             whose backend index matches expected_index (the index
-             captured at recording start). This covers the common case
-             where duplicate-name hardware still enumerates in stable
-             order; when the indices have shuffled too (no unique match)
-             we return None rather than guess which physical endpoint to
-             use. A backend-stable endpoint ID would be the proper fix;
-             index-as-tiebreaker is a pragmatic stopgap.
+          2. If two or more devices share the exact name, returns None.
+             Index-based disambiguation was deliberately removed: indices
+             can shuffle within a duplicate-name group during re-
+             enumeration, so matching on index still allows silently
+             binding to the wrong physical device. Without a backend-stable
+             endpoint ID (WASAPI GUID / CoreAudio UID), the safe behaviour
+             is to surface ambiguity to the user. Users with duplicate-
+             name hardware lose resume-after-sleep, but never record from
+             a wrong source.
           3. Transient enumeration errors propagate as exceptions. A short
              retry loop papers over one-off sounddevice / PortAudio hiccups,
              but persistent failures are re-raised so the caller distinguishes
@@ -2250,14 +2250,10 @@ class FiberyTranscriptApp:
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
-            if expected_index is not None:
-                for dev in matches:
-                    if dev.index == expected_index:
-                        return dev
             logger.warning(
-                "Device name %r matches %d devices and index %r is not among "
-                "them; refusing to guess which physical endpoint to use",
-                name, len(matches), expected_index,
+                "Device name %r matches %d devices; refusing to guess which "
+                "physical endpoint to use (needs a stable endpoint ID)",
+                name, len(matches),
             )
             return None
         logger.warning(
@@ -2803,16 +2799,12 @@ class FiberyTranscriptApp:
         wanted_mic_name = self._selected_mic_name
         wanted_loopback_name = self._selected_loopback_name
 
-        def _resolve(name: Optional[str], is_loopback: bool, expected_index: Optional[int]):
+        def _resolve(name: Optional[str], is_loopback: bool):
             """Return (device, status). status ∈ {'unset','ok','missing','transient'}."""
             if not name:
                 return None, "unset"
             try:
-                dev = self._find_device_by_name(
-                    name,
-                    is_loopback=is_loopback,
-                    expected_index=expected_index,
-                )
+                dev = self._find_device_by_name(name, is_loopback=is_loopback)
             except Exception as e:
                 logger.warning(
                     "Transient device enumeration failure on wake for %r: %s",
@@ -2821,15 +2813,9 @@ class FiberyTranscriptApp:
                 return None, "transient"
             return dev, ("ok" if dev else "missing")
 
-        mic_device, mic_status = _resolve(
-            wanted_mic_name,
-            is_loopback=False,
-            expected_index=self._selected_mic_index,
-        )
+        mic_device, mic_status = _resolve(wanted_mic_name, is_loopback=False)
         loopback_device, loopback_status = _resolve(
-            wanted_loopback_name,
-            is_loopback=True,
-            expected_index=self._selected_sys_index,
+            wanted_loopback_name, is_loopback=True
         )
 
         if mic_device:

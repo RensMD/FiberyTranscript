@@ -125,55 +125,69 @@ class MacOSAudioCapture(AudioCapture):
             return
         self._capturing = True
 
-        if mic_device:
-            def mic_cb(indata, frames, time_info, status):
-                samples = (indata[:, 0] * 32767).astype(np.int16)
-                raw_level = calculate_rms(indata[:, 0])
-                if noise_suppressor:
-                    cleaned = noise_suppressor.process(samples)
-                    level = calculate_rms(cleaned.astype(np.float32) / 32767.0)
-                else:
-                    level = raw_level
-                pcm = samples.tobytes()
-                on_level_update(level, -1, raw_level)
-                on_audio_chunk(pcm, b"")
+        try:
+            if mic_device:
+                def mic_cb(indata, frames, time_info, status):
+                    samples = (indata[:, 0] * 32767).astype(np.int16)
+                    raw_level = calculate_rms(indata[:, 0])
+                    if noise_suppressor:
+                        cleaned = noise_suppressor.process(samples)
+                        level = calculate_rms(cleaned.astype(np.float32) / 32767.0)
+                    else:
+                        level = raw_level
+                    pcm = samples.tobytes()
+                    on_level_update(level, -1, raw_level)
+                    on_audio_chunk(pcm, b"")
 
+                try:
+                    self._mic_stream = sd.InputStream(
+                        device=mic_device.index,
+                        samplerate=sample_rate,
+                        channels=1,
+                        dtype="float32",
+                        blocksize=CHUNK_SAMPLES,
+                        callback=mic_cb,
+                    )
+                    self._mic_stream.start()
+                    logger.info("Microphone capture started: %s", mic_device.name)
+                except Exception as e:
+                    logger.error("Failed to open microphone %s: %s", mic_device.name, e)
+                    self._mic_stream = None
+                    raise RuntimeError(
+                        f"Failed to open microphone {mic_device.name!r}: {e}"
+                    ) from e
+
+            if loopback_device:
+                def loopback_cb(indata, frames, time_info, status):
+                    pcm = (indata[:, 0] * 32767).astype(np.int16).tobytes()
+                    level = calculate_rms(indata[:, 0])
+                    on_level_update(-1, level, -1)
+                    on_audio_chunk(b"", pcm)
+
+                try:
+                    self._loopback_stream = sd.InputStream(
+                        device=loopback_device.index,
+                        samplerate=sample_rate,
+                        channels=1,
+                        dtype="float32",
+                        blocksize=CHUNK_SAMPLES,
+                        callback=loopback_cb,
+                    )
+                    self._loopback_stream.start()
+                    logger.info("Loopback capture started: %s", loopback_device.name)
+                except Exception as e:
+                    logger.error("Failed to open loopback %s: %s", loopback_device.name, e)
+                    self._loopback_stream = None
+                    raise RuntimeError(
+                        f"Failed to open loopback {loopback_device.name!r}: {e}"
+                    ) from e
+        except Exception:
             try:
-                self._mic_stream = sd.InputStream(
-                    device=mic_device.index,
-                    samplerate=sample_rate,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=CHUNK_SAMPLES,
-                    callback=mic_cb,
-                )
-                self._mic_stream.start()
-                logger.info("Microphone capture started: %s", mic_device.name)
-            except Exception as e:
-                logger.error("Failed to open microphone %s: %s", mic_device.name, e)
-                self._mic_stream = None
-
-        if loopback_device:
-            def loopback_cb(indata, frames, time_info, status):
-                pcm = (indata[:, 0] * 32767).astype(np.int16).tobytes()
-                level = calculate_rms(indata[:, 0])
-                on_level_update(-1, level, -1)
-                on_audio_chunk(b"", pcm)
-
-            try:
-                self._loopback_stream = sd.InputStream(
-                    device=loopback_device.index,
-                    samplerate=sample_rate,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=CHUNK_SAMPLES,
-                    callback=loopback_cb,
-                )
-                self._loopback_stream.start()
-                logger.info("Loopback capture started: %s", loopback_device.name)
-            except Exception as e:
-                logger.error("Failed to open loopback %s: %s", loopback_device.name, e)
-                self._loopback_stream = None
+                self.stop_capture()
+            except Exception:
+                logger.debug("stop_capture cleanup after failed start_capture raised",
+                             exc_info=True)
+            raise
 
     def stop_capture(self) -> None:
         self._capturing = False

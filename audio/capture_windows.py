@@ -109,6 +109,13 @@ class WindowsAudioCapture(AudioCapture):
         self._loopback_lost_fired = False
         # Gap-event callback (Phase 2.4). Optional; only wired for loopback stalls here.
         self._on_gap: Optional[Callable[[str, str, float, Optional[float]], None]] = None
+        # Transactional loopback-open: the loopback thread signals this event
+        # after stream.start_stream() succeeds; _start_loopback waits on it
+        # with timeout and raises the stored error on failure. Without this,
+        # stream-open failures in the background thread were silent and
+        # resume-from-sleep could claim success while no audio flowed.
+        self._loopback_open_done = threading.Event()
+        self._loopback_open_error: Optional[BaseException] = None
 
     def reinitialize(self) -> None:
         """Re-initialize sounddevice to pick up newly connected devices."""
@@ -276,13 +283,22 @@ class WindowsAudioCapture(AudioCapture):
         self._loopback_lost_fired = False
         self._mic_watcher_stop.clear()
 
-        # Start microphone capture via sounddevice
-        if mic_device:
-            self._start_mic(mic_device, sample_rate)
-
-        # Start loopback capture via PyAudioWPatch
-        if loopback_device:
-            self._start_loopback(loopback_device, sample_rate)
+        # Transactional: if either side fails to open, tear down the
+        # whole capture and re-raise. This is the only way callers
+        # (especially wake-resume) can reliably distinguish "capture
+        # running" from "capture was requested but no stream opened".
+        try:
+            if mic_device:
+                self._start_mic(mic_device, sample_rate)
+            if loopback_device:
+                self._start_loopback(loopback_device, sample_rate)
+        except Exception:
+            try:
+                self.stop_capture()
+            except Exception:
+                logger.debug("stop_capture cleanup after failed start_capture raised",
+                             exc_info=True)
+            raise
 
     def _start_mic(self, device: AudioDevice, sample_rate: int) -> None:
         """Start microphone capture stream."""
@@ -320,7 +336,13 @@ class WindowsAudioCapture(AudioCapture):
         except Exception as e:
             logger.error("Failed to open microphone %s: %s", device.name, e)
             self._mic_stream = None
-            return
+            # Propagate: the caller explicitly requested this mic, so "open
+            # failed" must not silently leave _capturing=True with a None
+            # stream — that makes resume-from-sleep happily report success
+            # while the new segment records silence.
+            raise RuntimeError(
+                f"Failed to open microphone {device.name!r}: {e}"
+            ) from e
 
         # Spawn a dedicated watcher thread that polls stream.active. sounddevice
         # signals disconnect by silently deactivating the stream (callback just
@@ -362,13 +384,33 @@ class WindowsAudioCapture(AudioCapture):
                 return
 
     def _start_loopback(self, device: AudioDevice, target_sample_rate: int) -> None:
-        """Start WASAPI loopback capture in a background thread."""
+        """Start WASAPI loopback capture in a background thread.
+
+        Waits synchronously for the thread to either open the WASAPI stream
+        or report a failure, so a broken loopback cannot look like a
+        successful start_capture() (which would cause wake-resume to
+        silently record no system audio).
+        """
+        self._loopback_open_done.clear()
+        self._loopback_open_error = None
         self._loopback_thread = threading.Thread(
             target=self._loopback_capture_loop,
             args=(device, target_sample_rate),
             daemon=True,
         )
         self._loopback_thread.start()
+
+        # Wait up to 5s for the thread to get through PyAudio init and
+        # WASAPI stream open. PyAudio init by itself can be ~0.5s cold.
+        if not self._loopback_open_done.wait(timeout=5.0):
+            raise RuntimeError(
+                f"Loopback stream did not open within 5s for {device.name!r}"
+            )
+        err = self._loopback_open_error
+        if err is not None:
+            raise RuntimeError(
+                f"Failed to open loopback {device.name!r}: {err}"
+            ) from err if isinstance(err, BaseException) else None
         logger.info("Loopback capture started: %s", device.name)
 
     def _loopback_capture_loop(self, device: AudioDevice, target_sample_rate: int) -> None:
@@ -472,11 +514,23 @@ class WindowsAudioCapture(AudioCapture):
                     logger.warning("Loopback open failed with buffer %d: %s", attempt_chunk, open_err)
 
             if stream is None:
-                logger.error("Could not open loopback stream for %s", device.name)
+                err = OSError(f"Could not open loopback stream for {device.name}")
+                logger.error("%s", err)
+                self._loopback_open_error = err
+                self._loopback_open_done.set()
                 return
 
             self._loopback_stream = stream
-            stream.start_stream()
+            try:
+                stream.start_stream()
+            except Exception as start_err:
+                logger.error("Failed to start loopback stream: %s", start_err)
+                self._loopback_open_error = start_err
+                self._loopback_open_done.set()
+                raise
+
+            # Signal open success to start_loopback() — caller is waiting.
+            self._loopback_open_done.set()
             logger.info(
                 "Loopback capture config: device=%s native_rate=%d channels=%d frames_per_buffer=%d",
                 device.name,
@@ -567,6 +621,12 @@ class WindowsAudioCapture(AudioCapture):
 
         except Exception as e:
             logger.error("Loopback capture error: %s", e)
+            # Safety net: if the thread died before signaling open-done,
+            # unblock _start_loopback() with the error so it can raise
+            # instead of timing out.
+            if not self._loopback_open_done.is_set():
+                self._loopback_open_error = e
+                self._loopback_open_done.set()
         finally:
             if watchdog is not None:
                 watchdog.finalize(time.monotonic())
