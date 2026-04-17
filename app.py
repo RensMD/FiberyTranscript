@@ -2785,6 +2785,15 @@ class FiberyTranscriptApp:
             self._resume_recording()
         except Exception as e:
             logger.error("Failed to resume recording after wake: %s", e)
+            # Release the Fibery recording lock BEFORE finalizing. Normal
+            # stop paths go through _stop_recording_inner which releases
+            # the lock; the wake-resume-failed path jumps directly to
+            # finalize, and without this explicit release the meeting
+            # entity stays locked remotely until the 30-minute stale
+            # timeout — blocking other clients from recording.
+            entity_for_lock = self._validated_entity if self._fibery_client else None
+            if entity_for_lock is not None:
+                self._release_recording_lock_async(entity_for_lock)
             try:
                 info = self._finalize_and_prepare()
             except Exception as e2:
