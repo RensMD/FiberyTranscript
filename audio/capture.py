@@ -68,6 +68,21 @@ class AudioCapture(ABC):
         """List available system/speaker loopback devices."""
 
     @abstractmethod
+    def get_default_input_device(self) -> Optional[AudioDevice]:
+        """Return the OS-default input (mic) device, or None if unavailable.
+
+        Must NOT raise; on any error or when the OS has no default, return None
+        so callers can surface a toast instead of recording from a surprise device.
+        """
+
+    @abstractmethod
+    def get_default_loopback_device(self) -> Optional[AudioDevice]:
+        """Return the OS-default system/loopback device, or None if unavailable.
+
+        Same no-raise contract as get_default_input_device().
+        """
+
+    @abstractmethod
     def start_capture(
         self,
         mic_device: Optional[AudioDevice],

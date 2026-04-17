@@ -157,6 +157,56 @@ class WindowsAudioCapture(AudioCapture):
         self._loopback_device_cache = list(devices)
         return devices
 
+    def get_default_input_device(self) -> Optional[AudioDevice]:
+        """Return the OS-default input device via sounddevice, or None."""
+        try:
+            # sd.default.device is a _InputOutputPair (input, output); subscriptable.
+            # -1 / None means no default.
+            try:
+                default_idx = sd.default.device[0]
+            except (TypeError, IndexError):
+                default_idx = sd.default.device
+            if default_idx is None or default_idx < 0:
+                return None
+            dev = sd.query_devices(default_idx)
+            if dev["max_input_channels"] <= 0:
+                return None
+            return AudioDevice(
+                index=int(default_idx),
+                name=dev["name"],
+                is_input=True,
+                is_loopback=False,
+                sample_rate=int(dev["default_samplerate"]),
+                channels=dev["max_input_channels"],
+            )
+        except Exception as e:
+            logger.warning("Failed to resolve default input device: %s", e)
+            return None
+
+    def get_default_loopback_device(self) -> Optional[AudioDevice]:
+        """Return the OS-default WASAPI loopback device, or None."""
+        try:
+            import pyaudiowpatch as pyaudio
+            with suppress_portaudio_output():
+                p = pyaudio.PyAudio()
+            try:
+                default = p.get_default_wasapi_loopback()
+                if not default:
+                    return None
+                return AudioDevice(
+                    index=int(default["index"]),
+                    name=default["name"] + " (Loopback)",
+                    is_input=True,
+                    is_loopback=True,
+                    sample_rate=int(default["defaultSampleRate"]),
+                    channels=int(default["maxInputChannels"]),
+                )
+            finally:
+                p.terminate()
+        except Exception as e:
+            logger.warning("Failed to resolve default loopback device: %s", e)
+            return None
+
     def _find_loopback_fallback(self) -> List[AudioDevice]:
         """Fallback method to find loopback device from default output."""
         import pyaudiowpatch as pyaudio

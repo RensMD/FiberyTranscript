@@ -56,6 +56,68 @@ class LinuxAudioCapture(AudioCapture):
                     ))
         return devices
 
+    def get_default_input_device(self) -> Optional[AudioDevice]:
+        """Return the OS-default input device via sounddevice, or None.
+
+        Skips monitor devices if the default is one (we want a real mic here —
+        monitor devices show up as inputs but are loopbacks).
+        """
+        try:
+            try:
+                default_idx = sd.default.device[0]
+            except (TypeError, IndexError):
+                default_idx = sd.default.device
+            if default_idx is None or default_idx < 0:
+                return None
+            dev = sd.query_devices(default_idx)
+            if dev["max_input_channels"] <= 0:
+                return None
+            if "monitor" in dev["name"].lower():
+                return None
+            return AudioDevice(
+                index=int(default_idx),
+                name=dev["name"],
+                is_input=True,
+                is_loopback=False,
+                sample_rate=int(dev["default_samplerate"]),
+                channels=dev["max_input_channels"],
+            )
+        except Exception as e:
+            logger.warning("Failed to resolve default input device: %s", e)
+            return None
+
+    def get_default_loopback_device(self) -> Optional[AudioDevice]:
+        """Return the monitor source for the default output sink, or None.
+
+        Linux (PulseAudio/PipeWire) exposes loopback as `<sink>.monitor`. We pick
+        the default output, then find the matching monitor device. Falls back to
+        the first enumerated monitor if the match can't be resolved.
+        """
+        try:
+            try:
+                default_out_idx = sd.default.device[1]
+            except (TypeError, IndexError):
+                default_out_idx = None
+            default_out_name = None
+            if default_out_idx is not None and default_out_idx >= 0:
+                try:
+                    default_out_name = sd.query_devices(default_out_idx)["name"]
+                except Exception:
+                    default_out_name = None
+
+            monitors = self.list_loopback_devices()
+            if not monitors:
+                return None
+            if default_out_name:
+                # Pulse/PipeWire convention: monitor name starts with the sink name
+                for mon in monitors:
+                    if default_out_name in mon.name or mon.name.startswith(default_out_name):
+                        return mon
+            return monitors[0]
+        except Exception as e:
+            logger.warning("Failed to resolve default loopback device: %s", e)
+            return None
+
     def start_capture(
         self,
         mic_device: Optional[AudioDevice],

@@ -61,6 +61,51 @@ class MacOSAudioCapture(AudioCapture):
             )
         return devices
 
+    def get_default_input_device(self) -> Optional[AudioDevice]:
+        """Return the OS-default input device via sounddevice, or None.
+
+        Skips BlackHole if it is the default input (we want a real mic here —
+        BlackHole shows up as an input but is only meaningful as a loopback).
+        """
+        try:
+            try:
+                default_idx = sd.default.device[0]
+            except (TypeError, IndexError):
+                default_idx = sd.default.device
+            if default_idx is None or default_idx < 0:
+                return None
+            dev = sd.query_devices(default_idx)
+            if dev["max_input_channels"] <= 0:
+                return None
+            if "blackhole" in dev["name"].lower():
+                return None
+            return AudioDevice(
+                index=int(default_idx),
+                name=dev["name"],
+                is_input=True,
+                is_loopback=False,
+                sample_rate=int(dev["default_samplerate"]),
+                channels=dev["max_input_channels"],
+            )
+        except Exception as e:
+            logger.warning("Failed to resolve default input device: %s", e)
+            return None
+
+    def get_default_loopback_device(self) -> Optional[AudioDevice]:
+        """Return the first BlackHole device as the loopback default, or None.
+
+        macOS has no native loopback default — BlackHole must be installed and
+        configured as a multi-output device. Rather than trusting the OS default
+        (which is typically the speakers, not a loopback), return the first
+        BlackHole device found. Returns None if BlackHole is not installed.
+        """
+        try:
+            devices = self.list_loopback_devices()
+            return devices[0] if devices else None
+        except Exception as e:
+            logger.warning("Failed to resolve default loopback device: %s", e)
+            return None
+
     def start_capture(
         self,
         mic_device: Optional[AudioDevice],
