@@ -913,6 +913,42 @@ class FiberyTranscriptApp:
 
         return ogg_noise_suppressor, ogg_agc
 
+    def _rollback_partial_recorder_and_mixer(self) -> None:
+        """Tear down a recorder+mixer that was created for a start that then failed.
+
+        Used by both _start_recording_locked and _resume_recording_locked
+        when audio_capture.start_capture() raises. The recorder's durability
+        and OGG threads are already alive by that point; leaving them running
+        leaks threads + file handles and can also leave an orphan WAV/OGG
+        on disk that never becomes part of _recording_segments.
+        """
+        if self._recorder is not None:
+            partial_paths: list[Path] = []
+            try:
+                seg_path = self._recorder.stop()
+                if seg_path:
+                    partial_paths.append(seg_path)
+                ogg_path = self._recorder.compressed_path
+                if ogg_path:
+                    partial_paths.append(ogg_path)
+            except Exception:
+                logger.debug("recorder.stop() during rollback raised", exc_info=True)
+            self._recorder = None
+            if partial_paths:
+                try:
+                    self._discard_paths(partial_paths)
+                except Exception:
+                    logger.debug(
+                        "Could not discard partial recording paths during rollback",
+                        exc_info=True,
+                    )
+        if self._mixer is not None:
+            try:
+                self._mixer.flush()
+            except Exception:
+                logger.debug("mixer.flush() during rollback raised", exc_info=True)
+            self._mixer = None
+
     def _start_recorder(self, channels: Optional[int] = None) -> Path:
         """Start a recorder using the session's fixed channel layout."""
         resolved_channels = channels
@@ -1671,6 +1707,13 @@ class FiberyTranscriptApp:
                 on_gap=self._on_capture_gap,
             )
         except Exception:
+            # Transactional startup: mixer + recorder were created before
+            # audio_capture.start_capture() ran. A raised start_capture
+            # leaves them live (recorder's durability + OGG threads are
+            # already spawned) and leaves an empty or partial WAV/OGG on
+            # disk. Stop the recorder, discard its artifacts, and drop
+            # the mixer before re-raising.
+            self._rollback_partial_recorder_and_mixer()
             self._resume_background_scanning()
             raise
 
@@ -2878,27 +2921,86 @@ class FiberyTranscriptApp:
         if output_channels is None:
             output_channels = 2 if (mic_device is not None and loopback_device is not None) else 1
 
-        # Set up new mixer
-        self._mixer = AudioMixer(
-            on_mixed_chunk=self._on_mixed_audio,
-            has_mic=mic_device is not None,
-            has_loopback=loopback_device is not None,
-            output_channels=output_channels,
-        )
+        # Attempt combined start first; on stream-open failure, fall back to
+        # mic-only then loopback-only so one-sided backend glitches after wake
+        # don't tear down the whole session. Rolls back recorder+mixer between
+        # attempts so a failed attempt never leaks its durability/OGG threads
+        # or its partial WAV/OGG artifacts.
+        attempts = []
+        if mic_device and loopback_device:
+            attempts.append(("both", mic_device, loopback_device))
+        if mic_device:
+            attempts.append(("mic-only", mic_device, None))
+        if loopback_device:
+            attempts.append(("loopback-only", None, loopback_device))
 
-        # Start new recorder with the fixed session channel layout
-        self._start_recorder(output_channels)
+        noise_suppressor = getattr(self, '_noise_suppressor', None)
+        started_mic: Optional[AudioDevice] = None
+        started_loopback: Optional[AudioDevice] = None
+        last_err: Optional[BaseException] = None
 
-        # Start capture (reuse existing noise suppressor for level monitoring)
-        self.audio_capture.start_capture(
-            mic_device=mic_device,
-            loopback_device=loopback_device,
-            on_audio_chunk=self._on_audio_chunk,
-            on_level_update=self._on_level_update,
-            noise_suppressor=getattr(self, '_noise_suppressor', None),
-            on_device_lost=self._on_device_lost,
-            on_gap=self._on_capture_gap,
-        )
+        for label, attempt_mic, attempt_loop in attempts:
+            # Tear down any partial mixer+recorder from a previous attempt
+            # before building the next one. (Also handles the normal case
+            # where the first attempt succeeds — the for loop exits with
+            # state held.)
+            self._rollback_partial_recorder_and_mixer()
+            self._mixer = AudioMixer(
+                on_mixed_chunk=self._on_mixed_audio,
+                has_mic=attempt_mic is not None,
+                has_loopback=attempt_loop is not None,
+                output_channels=output_channels,
+            )
+            self._start_recorder(output_channels)
+            try:
+                self.audio_capture.start_capture(
+                    mic_device=attempt_mic,
+                    loopback_device=attempt_loop,
+                    on_audio_chunk=self._on_audio_chunk,
+                    on_level_update=self._on_level_update,
+                    noise_suppressor=noise_suppressor,
+                    on_device_lost=self._on_device_lost,
+                    on_gap=self._on_capture_gap,
+                )
+                started_mic = attempt_mic
+                started_loopback = attempt_loop
+                break
+            except Exception as e:
+                last_err = e
+                logger.warning(
+                    "Wake start_capture %s failed: %s",
+                    label, e,
+                )
+
+        if started_mic is None and started_loopback is None:
+            # All attempts failed — roll back and raise so on_system_wake
+            # finalizes the recording cleanly.
+            self._rollback_partial_recorder_and_mixer()
+            raise RuntimeError(
+                f"Could not open any audio stream after wake: {last_err}"
+            ) from last_err
+
+        # If we degraded to a single source, surface which side was dropped.
+        if mic_device and started_mic is None:
+            self._record_gap(
+                source="mic", reason=f"wake_open_failed:{mic_device.name}",
+            )
+            self._notify_js(
+                "window.showToast(" + json.dumps(
+                    f"Microphone stream did not reopen ({mic_device.name}); "
+                    "continuing with system audio only."
+                ) + ", 'warning', 9000)"
+            )
+        if loopback_device and started_loopback is None:
+            self._record_gap(
+                source="loopback", reason=f"wake_open_failed:{loopback_device.name}",
+            )
+            self._notify_js(
+                "window.showToast(" + json.dumps(
+                    f"System audio stream did not reopen ({loopback_device.name}); "
+                    "continuing with microphone only."
+                ) + ", 'warning', 9000)"
+            )
 
         self._segment_start_time = time.monotonic()
 

@@ -109,13 +109,14 @@ class WindowsAudioCapture(AudioCapture):
         self._loopback_lost_fired = False
         # Gap-event callback (Phase 2.4). Optional; only wired for loopback stalls here.
         self._on_gap: Optional[Callable[[str, str, float, Optional[float]], None]] = None
-        # Transactional loopback-open: the loopback thread signals this event
-        # after stream.start_stream() succeeds; _start_loopback waits on it
-        # with timeout and raises the stored error on failure. Without this,
-        # stream-open failures in the background thread were silent and
-        # resume-from-sleep could claim success while no audio flowed.
-        self._loopback_open_done = threading.Event()
-        self._loopback_open_error: Optional[BaseException] = None
+        # Monotonic loopback-attempt generation. Bumped on every start so a
+        # thread started for attempt N can detect that it is stale (a newer
+        # attempt has been started) and refuse to touch shared instance
+        # state like _loopback_stream. Without this, a thread from a
+        # timed-out attempt could either satisfy the next attempt's
+        # handshake or, worse, open a stream and assign it into the
+        # new session's _loopback_stream.
+        self._loopback_attempt_generation = 0
 
     def reinitialize(self) -> None:
         """Re-initialize sounddevice to pick up newly connected devices."""
@@ -386,34 +387,44 @@ class WindowsAudioCapture(AudioCapture):
     def _start_loopback(self, device: AudioDevice, target_sample_rate: int) -> None:
         """Start WASAPI loopback capture in a background thread.
 
-        Waits synchronously for the thread to either open the WASAPI stream
-        or report a failure, so a broken loopback cannot look like a
-        successful start_capture() (which would cause wake-resume to
-        silently record no system audio).
+        Per-attempt open-handshake state is passed to the thread via closure
+        locals so a timed-out thread from a previous attempt cannot satisfy
+        this attempt's wait. The thread also checks its generation token
+        before assigning to shared instance state like _loopback_stream.
         """
-        self._loopback_open_done.clear()
-        self._loopback_open_error = None
+        self._loopback_attempt_generation += 1
+        my_generation = self._loopback_attempt_generation
+        open_done = threading.Event()
+        open_result: dict = {"error": None}
+
         self._loopback_thread = threading.Thread(
             target=self._loopback_capture_loop,
-            args=(device, target_sample_rate),
+            args=(device, target_sample_rate, my_generation, open_done, open_result),
             daemon=True,
         )
         self._loopback_thread.start()
 
         # Wait up to 5s for the thread to get through PyAudio init and
         # WASAPI stream open. PyAudio init by itself can be ~0.5s cold.
-        if not self._loopback_open_done.wait(timeout=5.0):
+        if not open_done.wait(timeout=5.0):
             raise RuntimeError(
                 f"Loopback stream did not open within 5s for {device.name!r}"
             )
-        err = self._loopback_open_error
+        err = open_result["error"]
         if err is not None:
             raise RuntimeError(
                 f"Failed to open loopback {device.name!r}: {err}"
             ) from err if isinstance(err, BaseException) else None
         logger.info("Loopback capture started: %s", device.name)
 
-    def _loopback_capture_loop(self, device: AudioDevice, target_sample_rate: int) -> None:
+    def _loopback_capture_loop(
+        self,
+        device: AudioDevice,
+        target_sample_rate: int,
+        attempt_generation: int,
+        open_done: threading.Event,
+        open_result: dict,
+    ) -> None:
         """Background thread for WASAPI loopback capture.
 
         Uses callback mode to avoid blocking on silent devices — WASAPI loopback
@@ -423,12 +434,39 @@ class WindowsAudioCapture(AudioCapture):
         The callback only copies raw bytes into a queue (no GIL-heavy numpy/scipy)
         so that PortAudio's audio thread is never delayed. This thread drains the
         queue and does the downmix + resample work.
+
+        attempt_generation + open_done + open_result form the per-attempt
+        handshake: the caller of _start_loopback waits on open_done, and the
+        thread writes its outcome into open_result["error"] (None = success).
+        attempt_generation lets a late thread from a previous start detect
+        that a newer attempt has replaced it and refuse to touch shared
+        instance state (_loopback_stream, _pyaudio_instance, etc).
         """
         import pyaudiowpatch as pyaudio
 
+        def is_stale() -> bool:
+            return attempt_generation != self._loopback_attempt_generation
+
+        if is_stale():
+            open_result["error"] = RuntimeError("Superseded before start")
+            open_done.set()
+            return
+
         with suppress_portaudio_output():
             p = pyaudio.PyAudio()
-        self._pyaudio_instance = p
+        if is_stale():
+            try:
+                p.terminate()
+            except Exception:
+                pass
+            open_result["error"] = RuntimeError("Superseded during PyAudio init")
+            open_done.set()
+            return
+        # p and stream stay as locals in this thread — do NOT assign them to
+        # self._pyaudio_instance / self._loopback_stream. A timed-out stale
+        # thread from a previous attempt would otherwise stomp on the current
+        # attempt's instance fields on cleanup, freeing the live attempt's
+        # PyAudio context and stream.
         watchdog: _LoopbackStallWatchdog | None = None
         native_rate = 0
         native_channels = 0
@@ -516,21 +554,33 @@ class WindowsAudioCapture(AudioCapture):
             if stream is None:
                 err = OSError(f"Could not open loopback stream for {device.name}")
                 logger.error("%s", err)
-                self._loopback_open_error = err
-                self._loopback_open_done.set()
+                open_result["error"] = err
+                open_done.set()
                 return
 
-            self._loopback_stream = stream
+            if is_stale():
+                # A newer attempt is in flight. Close the stream we just
+                # opened and bow out.
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                open_result["error"] = RuntimeError(
+                    "Superseded after loopback stream open"
+                )
+                open_done.set()
+                return
+
             try:
                 stream.start_stream()
             except Exception as start_err:
                 logger.error("Failed to start loopback stream: %s", start_err)
-                self._loopback_open_error = start_err
-                self._loopback_open_done.set()
+                open_result["error"] = start_err
+                open_done.set()
                 raise
 
             # Signal open success to start_loopback() — caller is waiting.
-            self._loopback_open_done.set()
+            open_done.set()
             logger.info(
                 "Loopback capture config: device=%s native_rate=%d channels=%d frames_per_buffer=%d",
                 device.name,
@@ -546,7 +596,10 @@ class WindowsAudioCapture(AudioCapture):
 
             # Drain the queue on THIS thread - all numpy/scipy work happens here,
             # keeping the PortAudio callback thread free for timely buffer servicing.
-            while self._capturing and stream.is_active():
+            # Also check staleness every iteration so a superseded thread never
+            # hands audio to self._on_audio_chunk (which now points to a newer
+            # attempt's handler).
+            while self._capturing and stream.is_active() and not is_stale():
                 try:
                     data = raw_queue.get(timeout=_LOOPBACK_QUEUE_TIMEOUT_SECONDS)
                 except queue.Empty:
@@ -624,9 +677,9 @@ class WindowsAudioCapture(AudioCapture):
             # Safety net: if the thread died before signaling open-done,
             # unblock _start_loopback() with the error so it can raise
             # instead of timing out.
-            if not self._loopback_open_done.is_set():
-                self._loopback_open_error = e
-                self._loopback_open_done.set()
+            if not open_done.is_set():
+                open_result["error"] = e
+                open_done.set()
         finally:
             if watchdog is not None:
                 watchdog.finalize(time.monotonic())
@@ -641,15 +694,21 @@ class WindowsAudioCapture(AudioCapture):
                         native_channels,
                         chunk_size,
                     )
+            # Close our local stream and terminate our local PyAudio — never
+            # self._loopback_stream / self._pyaudio_instance, which may now
+            # belong to a newer attempt if this thread was superseded.
             try:
-                if self._loopback_stream:
-                    self._loopback_stream.stop_stream()
-                    self._loopback_stream.close()
+                if stream is not None:
+                    stream.stop_stream()
+                    stream.close()
             except OSError:
                 pass  # stream already closed / in bad state
-            self._loopback_stream = None
-            p.terminate()
-            self._pyaudio_instance = None
+            except Exception:
+                logger.debug("stream close during loopback teardown raised", exc_info=True)
+            try:
+                p.terminate()
+            except Exception:
+                logger.debug("p.terminate() during loopback teardown raised", exc_info=True)
             if mmcss_handle and avrt is not None:
                 try:
                     avrt.AvRevertMmThreadCharacteristics(mmcss_handle)
