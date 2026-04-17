@@ -304,6 +304,39 @@ class AudioMixer:
 
         return chunk
 
+    def deactivate_source(self, source: str) -> None:
+        """Mark a source as permanently lost for this mixer instance.
+
+        Drains any remaining audio from the surviving source's buffer and
+        prevents _try_mix from waiting on the dead source. The WAV channel
+        count is fixed at start() time — DO NOT mutate _output_channels
+        here; _emit_chunk's stereo branch already silence-pads the dead
+        side via _take_chunk.
+        """
+        with self._lock:
+            if source == "mic":
+                self._has_mic = False
+            elif source == "loopback":
+                self._has_loopback = False
+            else:
+                logger.warning("deactivate_source: unknown source %r", source)
+                return
+            logger.info("Mixer: source %r deactivated", source)
+            # Drain any partially-buffered surviving-source data.
+            pending: list[bytes] = []
+            self._try_mix(pending)
+            self._emit_queue.extend(pending)
+        self._drain_emit_queue()
+
+    def is_source_active(self, source: str) -> bool:
+        """Return True if the given source is still contributing audio."""
+        with self._lock:
+            if source == "mic":
+                return self._has_mic
+            if source == "loopback":
+                return self._has_loopback
+            return False
+
     def flush(self) -> None:
         """Flush remaining audio in buffers."""
         with self._lock:

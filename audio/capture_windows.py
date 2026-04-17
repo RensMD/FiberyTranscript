@@ -92,6 +92,15 @@ class WindowsAudioCapture(AudioCapture):
         # log with one line per callback when a stream enters a degraded state.
         self._mic_status_warned = False
         self._loopback_status_warned = False
+        # Device-disconnect detection (Phase 2.1).
+        self._on_device_lost: Optional[Callable[[str, str], None]] = None
+        self._mic_device_name: Optional[str] = None
+        self._loopback_device_name: Optional[str] = None
+        self._mic_watcher_thread: Optional[threading.Thread] = None
+        self._mic_watcher_stop = threading.Event()
+        # Latch so a watcher cannot double-fire on_device_lost for the same source.
+        self._mic_lost_fired = False
+        self._loopback_lost_fired = False
 
     def reinitialize(self) -> None:
         """Re-initialize sounddevice to pick up newly connected devices."""
@@ -240,6 +249,7 @@ class WindowsAudioCapture(AudioCapture):
         on_level_update: Callable[[float, float, float], None],
         sample_rate: int = SAMPLE_RATE,
         noise_suppressor=None,
+        on_device_lost: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         if self._capturing:
             logger.warning("Already capturing, call stop_capture first")
@@ -249,6 +259,12 @@ class WindowsAudioCapture(AudioCapture):
         self._on_audio_chunk = on_audio_chunk
         self._on_level_update = on_level_update
         self._noise_suppressor = noise_suppressor
+        self._on_device_lost = on_device_lost
+        self._mic_device_name = mic_device.name if mic_device else None
+        self._loopback_device_name = loopback_device.name if loopback_device else None
+        self._mic_lost_fired = False
+        self._loopback_lost_fired = False
+        self._mic_watcher_stop.clear()
 
         # Start microphone capture via sounddevice
         if mic_device:
@@ -294,6 +310,46 @@ class WindowsAudioCapture(AudioCapture):
         except Exception as e:
             logger.error("Failed to open microphone %s: %s", device.name, e)
             self._mic_stream = None
+            return
+
+        # Spawn a dedicated watcher thread that polls stream.active. sounddevice
+        # signals disconnect by silently deactivating the stream (callback just
+        # stops firing), so polling is the reliable detection path. A separate
+        # thread is simpler than piggy-backing on the loopback thread — mic-only
+        # recordings don't have a loopback thread, and the watcher can fire
+        # on_device_lost without taking any mixer / app locks.
+        self._mic_watcher_thread = threading.Thread(
+            target=self._mic_watcher_loop,
+            args=(device.name,),
+            name="mic-watcher",
+            daemon=True,
+        )
+        self._mic_watcher_thread.start()
+
+    def _mic_watcher_loop(self, device_name: str) -> None:
+        """Poll the mic stream for unexpected deactivation (disconnect)."""
+        while not self._mic_watcher_stop.wait(2.0):
+            if not self._capturing:
+                return
+            stream = self._mic_stream
+            # stream may have been torn down by stop_capture; that's graceful.
+            if stream is None:
+                return
+            try:
+                active = stream.active
+            except Exception:
+                active = False
+            if not active:
+                if self._mic_lost_fired:
+                    return
+                self._mic_lost_fired = True
+                logger.warning("Mic stream went inactive unexpectedly: %s", device_name)
+                if self._on_device_lost:
+                    try:
+                        self._on_device_lost("mic", device_name)
+                    except Exception:
+                        logger.exception("on_device_lost('mic', ...) raised")
+                return
 
     def _start_loopback(self, device: AudioDevice, target_sample_rate: int) -> None:
         """Start WASAPI loopback capture in a background thread."""
@@ -468,6 +524,26 @@ class WindowsAudioCapture(AudioCapture):
                 self._on_level_update(-1, level, -1)
                 self._on_audio_chunk(b"", pcm)
 
+            # If the loop exited while we still intend to capture, the stream
+            # died underneath us (device removed, driver fault, etc.). Raise
+            # on_device_lost before teardown so the app can degrade gracefully
+            # to the surviving source instead of silently losing loopback.
+            if self._capturing and stream is not None:
+                try:
+                    still_active = stream.is_active()
+                except Exception:
+                    still_active = False
+                if not still_active and not self._loopback_lost_fired:
+                    self._loopback_lost_fired = True
+                    logger.warning(
+                        "Loopback stream died unexpectedly: %s", device.name
+                    )
+                    if self._on_device_lost:
+                        try:
+                            self._on_device_lost("loopback", device.name)
+                        except Exception:
+                            logger.exception("on_device_lost('loopback', ...) raised")
+
         except Exception as e:
             logger.error("Loopback capture error: %s", e)
         finally:
@@ -502,6 +578,7 @@ class WindowsAudioCapture(AudioCapture):
     def stop_capture(self) -> None:
         self._capturing = False
         self._loopback_device_cache = None  # Allow fresh enumeration when idle
+        self._mic_watcher_stop.set()
 
         if self._mic_stream:
             try:
@@ -512,10 +589,18 @@ class WindowsAudioCapture(AudioCapture):
             self._mic_stream = None
             logger.info("Microphone capture stopped")
 
+        if self._mic_watcher_thread is not None:
+            self._mic_watcher_thread.join(timeout=3.0)
+            self._mic_watcher_thread = None
+
         if self._loopback_thread:
             self._loopback_thread.join(timeout=3.0)
             self._loopback_thread = None
             logger.info("Loopback capture stopped")
+
+        self._on_device_lost = None
+        self._mic_device_name = None
+        self._loopback_device_name = None
 
     def is_capturing(self) -> bool:
         return self._capturing

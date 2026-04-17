@@ -1572,6 +1572,7 @@ class FiberyTranscriptApp:
                 on_audio_chunk=self._on_audio_chunk,
                 on_level_update=self._on_level_update,
                 noise_suppressor=noise_suppressor,
+                on_device_lost=self._on_device_lost,
             )
         except Exception:
             self._resume_background_scanning()
@@ -1652,6 +1653,7 @@ class FiberyTranscriptApp:
                 on_audio_chunk=self._on_audio_chunk,
                 on_level_update=self._on_level_update,
                 noise_suppressor=ns,
+                on_device_lost=self._on_device_lost,
             )
         except Exception as e:
             logger.error("Failed to start new audio source: %s, attempting rollback", e)
@@ -1671,6 +1673,7 @@ class FiberyTranscriptApp:
                     on_audio_chunk=self._on_audio_chunk,
                     on_level_update=self._on_level_update,
                     noise_suppressor=ns,
+                    on_device_lost=self._on_device_lost,
                 )
                 logger.info("Rolled back to previous audio sources")
             except Exception:
@@ -2000,6 +2003,52 @@ class FiberyTranscriptApp:
         """Compatibility wrapper for older callers using the one-step API."""
         self.prepare_uploaded_audio(file_path)
         self.start_transcription(TranscriptionOptions())
+
+    def _on_device_lost(self, source: str, device_name: str) -> None:
+        """Handle audio device disconnection during recording.
+
+        Fires from a capture-layer thread (mic-watcher or loopback). Never
+        holds _audio_lifecycle_lock, so dispatching stop_recording onto a
+        background thread avoids any risk of lock re-entry at a future
+        caller. Graceful-degradation path: deactivate the dead source in the
+        mixer so the survivor keeps flowing into the WAV; surface a toast;
+        only stop recording if both sources are gone.
+        """
+        logger.warning("Device lost: %s (%s)", source, device_name)
+
+        if self.state != self.STATE_RECORDING:
+            return
+
+        if self._mixer:
+            try:
+                self._mixer.deactivate_source(source)
+            except Exception:
+                logger.exception("Mixer deactivate_source failed")
+
+        if source == "mic":
+            msg = (
+                f"Microphone disconnected ({device_name}); "
+                "continuing with system audio."
+            )
+        elif source == "loopback":
+            msg = (
+                f"System audio lost ({device_name}); "
+                "continuing with microphone."
+            )
+        else:
+            msg = f"Audio source lost: {device_name}"
+        self._notify_js(f"window.showToast({json.dumps(msg)}, 'warning', 9000)")
+
+        if (
+            self._mixer
+            and not self._mixer.is_source_active("mic")
+            and not self._mixer.is_source_active("loopback")
+        ):
+            logger.error("All audio sources lost, stopping recording")
+            self._notify_js(
+                "window.showToast('All audio sources lost — recording stopped.', 'error', 9000)"
+            )
+            threading.Thread(target=self.stop_recording, daemon=True).start()
 
     def _find_device(self, index: int, is_loopback: bool) -> Optional[AudioDevice]:
         """Find a device by its index."""
@@ -2573,6 +2622,7 @@ class FiberyTranscriptApp:
             on_audio_chunk=self._on_audio_chunk,
             on_level_update=self._on_level_update,
             noise_suppressor=getattr(self, '_noise_suppressor', None),
+            on_device_lost=self._on_device_lost,
         )
 
         self._segment_start_time = time.monotonic()

@@ -91,6 +91,7 @@ class AudioCapture(ABC):
         on_level_update: Callable[[float, float, float], None],
         sample_rate: int = 16000,
         noise_suppressor=None,
+        on_device_lost: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         """Start capturing audio.
 
@@ -101,6 +102,9 @@ class AudioCapture(ABC):
             on_level_update: Callback with (mic_rms, sys_rms, raw_mic_rms). -1 = no update.
             sample_rate: Target sample rate (default 16kHz for AssemblyAI).
             noise_suppressor: Optional NoiseSuppressor for level monitoring.
+            on_device_lost: Optional callback fired when a device disconnects
+                during capture. Signature (source, device_name) where source
+                is "mic" or "loopback". May fire from a capture-layer thread.
         """
 
     @abstractmethod

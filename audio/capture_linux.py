@@ -126,7 +126,11 @@ class LinuxAudioCapture(AudioCapture):
         on_level_update: Callable[[float, float, float], None],
         sample_rate: int = SAMPLE_RATE,
         noise_suppressor=None,
+        on_device_lost: Optional[Callable[[str, str], None]] = None,
     ) -> None:
+        # Device-disconnect detection is not yet wired up on Linux. Accept
+        # the parameter so the interface matches the Windows implementation.
+        _ = on_device_lost
         if self._capturing:
             return
         self._capturing = True
