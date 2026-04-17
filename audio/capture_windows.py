@@ -619,7 +619,12 @@ class WindowsAudioCapture(AudioCapture):
                                 self._on_gap("loopback", "stall", now, None)
                             except Exception:
                                 logger.exception("on_gap(stall start) raised")
-                    if emit_silence:
+                    # Re-check staleness right before emitting. The while
+                    # condition checks it once per iteration, but this thread
+                    # could have been superseded between that check and now.
+                    # Emitting after becoming stale would inject silence into
+                    # the NEW session's audio callbacks.
+                    if emit_silence and not is_stale():
                         self._on_level_update(-1, 0.0, -1)
                         self._on_audio_chunk(b"", silence_chunk)
                     continue
@@ -649,6 +654,11 @@ class WindowsAudioCapture(AudioCapture):
 
                 pcm = samples.tobytes()
                 level = calculate_rms(samples.astype(np.float32) / 32767.0)
+                # Re-check staleness before emit (see comment above for silence
+                # path). A stale thread that slipped past the while condition
+                # must not feed loopback PCM into the next session.
+                if is_stale():
+                    continue
                 self._on_level_update(-1, level, -1)
                 self._on_audio_chunk(b"", pcm)
 
