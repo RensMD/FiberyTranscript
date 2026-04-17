@@ -48,6 +48,10 @@ class AudioMixer:
         self._mic_buffer = b""
         self._loopback_buffer = b""
         self._lock = threading.Lock()
+        # Serializes downstream callback emission so concurrent mic + loopback
+        # producer threads cannot interleave chunks in the WAV stream. Held
+        # only around _on_mixed_chunk dispatch, never around buffer work.
+        self._emit_lock = threading.Lock()
         self._has_mic = has_mic
         self._has_loopback = has_loopback
         if output_channels is None:
@@ -75,6 +79,7 @@ class AudioMixer:
         """Add microphone PCM data to the mix buffer."""
         if not pcm_data:
             return
+        pending: list[bytes] = []
         with self._lock:
             now = time.monotonic()
             self._last_mic_audio_time = now
@@ -83,12 +88,14 @@ class AudioMixer:
             self._stall_warned_mic = False  # Source is alive again
             self._mic_buffer += pcm_data
             self._cap_buffer()
-            self._try_mix()
+            self._try_mix(pending)
+        self._emit_pending(pending)
 
     def add_loopback_audio(self, pcm_data: bytes) -> None:
         """Add loopback/system PCM data to the mix buffer."""
         if not pcm_data:
             return
+        pending: list[bytes] = []
         with self._lock:
             now = time.monotonic()
             self._last_loopback_audio_time = now
@@ -97,7 +104,21 @@ class AudioMixer:
             self._stall_warned_loop = False  # Source is alive again
             self._loopback_buffer += pcm_data
             self._cap_buffer()
-            self._try_mix()
+            self._try_mix(pending)
+        self._emit_pending(pending)
+
+    def _emit_pending(self, pending: list[bytes]) -> None:
+        """Dispatch mixed chunks downstream, serialized by _emit_lock.
+
+        Runs outside _lock so downstream disk I/O never stalls audio callbacks.
+        _emit_lock only excludes other emitters — producer threads queueing
+        into the mixer are unaffected.
+        """
+        if not pending:
+            return
+        with self._emit_lock:
+            for chunk in pending:
+                self._on_mixed_chunk(chunk)
 
     def _cap_buffer(self) -> None:
         """Discard oldest data if either buffer exceeds the cap.
@@ -187,12 +208,15 @@ class AudioMixer:
         self._mark_stall(is_mic=is_mic, now=now)
         return True
 
-    def _try_mix(self) -> None:
-        """Emit paired chunks from both sources.
+    def _try_mix(self, out: list) -> None:
+        """Produce paired chunks and append bytes to `out`.
 
         In stereo mode, emit paired chunks normally, or pad the missing side
         with silence once a source has stalled past the grace window.
         In mono mode, emits whenever the active source has enough data.
+
+        Callers run this under _lock and dispatch `out` downstream AFTER
+        releasing _lock — see _emit_pending().
         """
         while True:
             mic_ready = len(self._mic_buffer) >= MIX_CHUNK_BYTES
@@ -222,16 +246,19 @@ class AudioMixer:
 
             mic_samples = np.frombuffer(mic_chunk, dtype=np.int16)
             loop_samples = np.frombuffer(loop_chunk, dtype=np.int16)
-            self._emit_chunk(mic_samples, loop_samples)
+            out.append(self._emit_chunk(mic_samples, loop_samples))
 
-    def _emit_chunk(self, mic_samples: np.ndarray, loop_samples: np.ndarray) -> None:
-        """Emit one chunk in the configured output format."""
+    def _emit_chunk(self, mic_samples: np.ndarray, loop_samples: np.ndarray) -> bytes:
+        """Return one chunk in the configured output format.
+
+        Pure computation — does NOT call downstream callbacks. Caller collects
+        the bytes and dispatches them under _emit_lock.
+        """
         if self.channels == 2:
             stereo = np.empty(len(mic_samples) * 2, dtype=np.int16)
             stereo[0::2] = mic_samples
             stereo[1::2] = loop_samples
-            self._on_mixed_chunk(stereo.tobytes())
-            return
+            return stereo.tobytes()
 
         if self._has_mic and self._has_loopback:
             mixed = np.clip(
@@ -239,11 +266,10 @@ class AudioMixer:
                 -32768,
                 32767,
             ).astype(np.int16)
-            self._on_mixed_chunk(mixed.tobytes())
-            return
+            return mixed.tobytes()
 
         active = mic_samples if self._has_mic else loop_samples
-        self._on_mixed_chunk(active.tobytes())
+        return active.tobytes()
 
     def _take_chunk(self, is_mic: bool) -> bytes:
         """Take MIX_CHUNK_BYTES from a buffer, padding with silence if short."""
@@ -268,20 +294,19 @@ class AudioMixer:
 
     def flush(self) -> None:
         """Flush remaining audio in buffers."""
+        pending: list[bytes] = []
         with self._lock:
             # Mix whatever remains, padding the shorter side with silence
             mic_len = len(self._mic_buffer)
             loop_len = len(self._loopback_buffer)
             flush_len = max(mic_len, loop_len)
 
-            if flush_len == 0:
-                return
-
-            mic_data = self._mic_buffer + b"\x00" * (flush_len - mic_len)
-            loop_data = self._loopback_buffer + b"\x00" * (flush_len - loop_len)
-
-            mic_samples = np.frombuffer(mic_data, dtype=np.int16)
-            loop_samples = np.frombuffer(loop_data, dtype=np.int16)
-            self._emit_chunk(mic_samples, loop_samples)
-            self._mic_buffer = b""
-            self._loopback_buffer = b""
+            if flush_len > 0:
+                mic_data = self._mic_buffer + b"\x00" * (flush_len - mic_len)
+                loop_data = self._loopback_buffer + b"\x00" * (flush_len - loop_len)
+                mic_samples = np.frombuffer(mic_data, dtype=np.int16)
+                loop_samples = np.frombuffer(loop_data, dtype=np.int16)
+                pending.append(self._emit_chunk(mic_samples, loop_samples))
+                self._mic_buffer = b""
+                self._loopback_buffer = b""
+        self._emit_pending(pending)
