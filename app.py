@@ -1309,13 +1309,21 @@ class FiberyTranscriptApp:
             return
         self._release_recording_lock_for(self._validated_entity, self._fibery_client)
 
-    def _release_recording_lock_async(self, entity) -> None:
-        """Release a recording lock off the UI-critical path."""
+    def _release_recording_lock_async(self, entity, client=None) -> None:
+        """Release a recording lock off the UI-critical path.
+
+        When `client` is provided, it is used verbatim by the worker — do
+        this from paths where a valid _fibery_client is already known to
+        exist (e.g. wake-resume-failed), since the default path re-reads
+        the API token from the OS key store and silently no-ops if that
+        lookup is unavailable. On a wake where backend deps are already
+        transiently degraded, that re-read is exactly what fails.
+        """
         if not entity:
             return
 
         def _worker() -> None:
-            self._release_recording_lock_for(entity)
+            self._release_recording_lock_for(entity, client=client)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -2790,10 +2798,16 @@ class FiberyTranscriptApp:
             # the lock; the wake-resume-failed path jumps directly to
             # finalize, and without this explicit release the meeting
             # entity stays locked remotely until the 30-minute stale
-            # timeout — blocking other clients from recording.
+            # timeout — blocking other clients from recording. Pass the
+            # live _fibery_client so the worker uses the already-authenticated
+            # connection instead of re-reading the API token from the key
+            # store (which can itself be transiently unavailable on a
+            # degraded wake and would silently skip the release).
             entity_for_lock = self._validated_entity if self._fibery_client else None
             if entity_for_lock is not None:
-                self._release_recording_lock_async(entity_for_lock)
+                self._release_recording_lock_async(
+                    entity_for_lock, client=self._fibery_client,
+                )
             try:
                 info = self._finalize_and_prepare()
             except Exception as e2:
