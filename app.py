@@ -3712,26 +3712,44 @@ class FiberyTranscriptApp:
             self.state = self.STATE_IDLE
 
     def begin_shutdown(self) -> None:
-        """Mark app as shutting down and stop all background activity."""
+        """Mark app as shutting down and stop all background activity.
+
+        Shutdown order is deliberate: monitors stop FIRST so sleep/wake and
+        device-change callbacks cannot re-enter the audio lifecycle while
+        we're tearing it down. Then emergency stop finalizes the recording
+        (which itself stops capture + flushes mixer + closes WAV), and
+        finally we wait on batch processing and close Fibery.
+        """
         if self._is_shutting_down:
             return
         self._is_shutting_down = True
+
+        # 1. Stop monitors first — prevents sleep/wake or device-scan callbacks
+        #    from firing during teardown.
+        if self._power_monitor:
+            self._power_monitor.stop()
+            self._power_monitor = None
+        self._scan_stop_event.set()
+        self.stop_background_scanning()
+
+        # 2. Emergency stop — finalizes the WAV (also stops capture + flushes mixer).
         self._emergency_stop_recording()
         self.release_recording_lock()
-        # Wait briefly for batch processing to finish (avoid losing transcript)
+
+        # 3. Wait briefly for batch processing to finish (avoid losing transcript)
         if self._batch_thread and self._batch_thread.is_alive():
             logger.info("Waiting for batch processing to complete...")
             self._batch_thread.join(timeout=5.0)
             if self._batch_thread.is_alive():
                 logger.warning("Batch processing still running, forcing shutdown")
-        self._scan_stop_event.set()
+
+        # 4. Tail guard: emergency_stop may have returned early (state != RECORDING)
+        #    or raised before stop_capture ran. stop_capture is idempotent so this
+        #    is cheap; removing it would leak a running capture on those paths.
         with self._audio_lifecycle_lock:
             if self.audio_capture.is_capturing():
                 self.audio_capture.stop_capture()
-        self.stop_background_scanning()
-        if self._power_monitor:
-            self._power_monitor.stop()
-            self._power_monitor = None
+
         if self._fibery_client:
             try:
                 self._fibery_client.close()
