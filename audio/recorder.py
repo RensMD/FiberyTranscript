@@ -9,6 +9,7 @@ capture callbacks (RNNoise is too slow for the critical path).
 """
 
 import logging
+import os
 import queue
 import threading
 import wave
@@ -30,6 +31,14 @@ except ImportError:
     _HAS_SOUNDFILE = False
 
 _SENTINEL = None  # Poison pill for OGG writer thread
+
+# Header refresh cadence: every 30s an off-path worker rewrites the WAV header
+# so a crash/power-fail leaves a playable file up to the last tick.
+_WAV_HEADER_REFRESH_SECONDS = 30.0
+# 32-bit WAV header size ceiling (riff_size field). Above this we stop
+# refreshing — the wave module's own close() will produce a valid header
+# up to its own limit.
+_WAV_HEADER_SIZE_LIMIT = 0xFFFFFFFF - 36
 
 
 class WavRecorder:
@@ -68,6 +77,12 @@ class WavRecorder:
         self._ogg_thread: Optional[threading.Thread] = None
         self._ogg_dropped_chunks: int = 0
         self._ogg_is_complete: bool = True
+        # Crash-safe WAV: track frames written and periodically rewrite the
+        # header off the audio path so a hard kill still leaves a playable file.
+        self._total_frames: int = 0
+        self._frames_lock = threading.Lock()
+        self._header_refresh_thread: Optional[threading.Thread] = None
+        self._header_refresh_stop = threading.Event()
 
     def _build_unique_path(self, base_stem: str, suffix: str) -> Path:
         """Return a non-conflicting path in the output directory."""
@@ -92,6 +107,20 @@ class WavRecorder:
         self._wav_file.setnchannels(self._channels)
         self._wav_file.setsampwidth(2)  # 16-bit
         self._wav_file.setframerate(self._sample_rate)
+
+        # Spawn the header-refresh worker. Uses its own r+b handle so the seek
+        # never touches the wave module's writer (which sits on a separate fd).
+        # Two handles are safe here because they write disjoint regions: the
+        # worker only touches bytes 0-44 (header), wave.writeframes only
+        # appends to the data section.
+        self._total_frames = 0
+        self._header_refresh_stop.clear()
+        self._header_refresh_thread = threading.Thread(
+            target=self._header_refresh_loop,
+            name="wav-header-refresh",
+            daemon=True,
+        )
+        self._header_refresh_thread.start()
 
         # Open parallel OGG Vorbis file for processed + compressed copy
         self._ogg_file = None
@@ -134,6 +163,8 @@ class WavRecorder:
         with self._lock:
             if self._wav_file and pcm_data:
                 self._wav_file.writeframes(pcm_data)  # Raw to WAV (fast)
+                with self._frames_lock:
+                    self._total_frames += len(pcm_data) // (2 * self._channels)
 
         # Queue for background OGG processing (non-blocking)
         if self._ogg_queue is not None and pcm_data:
@@ -148,6 +179,45 @@ class WavRecorder:
                         "OGG queue full, dropping chunk (total dropped: %d)",
                         self._ogg_dropped_chunks,
                     )
+
+    def _header_refresh_loop(self) -> None:
+        """Rewrite WAV header every 30s so a crash leaves a playable file.
+
+        Runs off the audio path: opens its own r+b handle, never blocks
+        write_chunk(). See _WAV_HEADER_SIZE_LIMIT for the 32-bit cap.
+        """
+        if self._file_path is None:
+            return
+        try:
+            handle = open(self._file_path, "r+b")
+        except OSError as e:
+            logger.warning("Header refresh: could not open handle: %s", e)
+            return
+        try:
+            while not self._header_refresh_stop.wait(_WAV_HEADER_REFRESH_SECONDS):
+                with self._frames_lock:
+                    frames = self._total_frames
+                data_size = frames * self._channels * 2
+                if data_size > _WAV_HEADER_SIZE_LIMIT:
+                    logger.warning(
+                        "Recording exceeds 4GB WAV header limit; skipping refresh"
+                    )
+                    continue
+                riff_size = 36 + data_size
+                try:
+                    handle.seek(4)
+                    handle.write(riff_size.to_bytes(4, "little"))
+                    handle.seek(40)
+                    handle.write(data_size.to_bytes(4, "little"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                except OSError as e:
+                    logger.warning("WAV header refresh failed: %s", e)
+        finally:
+            try:
+                handle.close()
+            except OSError:
+                pass
 
     def _ogg_writer_loop(self, ogg_file) -> None:
         """Background thread: process and write OGG chunks.
@@ -194,6 +264,15 @@ class WavRecorder:
 
     def stop(self) -> Optional[Path]:
         """Stop recording and close the WAV file. Returns the file path."""
+        # Stop the header-refresh worker BEFORE closing wav_file so the worker
+        # never races with wave.close()'s final _patchheader write.
+        self._header_refresh_stop.set()
+        if self._header_refresh_thread is not None:
+            self._header_refresh_thread.join(timeout=2.0)
+            if self._header_refresh_thread.is_alive():
+                logger.warning("WAV header refresh thread did not exit in time")
+            self._header_refresh_thread = None
+
         with self._lock:
             if self._wav_file:
                 self._wav_file.close()
