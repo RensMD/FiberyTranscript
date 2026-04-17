@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 _LOOPBACK_QUEUE_TIMEOUT_SECONDS = 0.1
 _LOOPBACK_STALL_TIMEOUT_SECONDS = 0.2
 _LOOPBACK_SILENCE_CHUNK_BYTES = CHUNK_SAMPLES * 2
+# After this many seconds of continuous silence injection, escalate to
+# on_device_lost rather than padding silence forever. User learns about
+# the dead channel during the meeting, not after.
+_LOOPBACK_STALL_ESCALATION_SECONDS = 10.0
 
 
 class _LoopbackStallWatchdog:
@@ -76,6 +80,12 @@ class _LoopbackStallWatchdog:
         active_duration = max(0.0, now - self._stall_started_time)
         self.longest_stall_seconds = max(self.longest_stall_seconds, active_duration)
         return active_duration
+
+    def stall_duration(self, now: float) -> float:
+        """Seconds since the current stall began, or 0.0 if not stalled."""
+        if self._stall_started_time is None:
+            return 0.0
+        return max(0.0, now - self._stall_started_time)
 
 
 class WindowsAudioCapture(AudioCapture):
@@ -497,6 +507,24 @@ class WindowsAudioCapture(AudioCapture):
                             native_channels,
                             chunk_size,
                         )
+                    # Escalate a long, unbroken stall to a full device-lost
+                    # event. Silence injection alone would hide a dead channel
+                    # for the entire meeting.
+                    if watchdog.stall_duration(now) > _LOOPBACK_STALL_ESCALATION_SECONDS:
+                        logger.warning(
+                            "Loopback stall exceeded %.0fs, escalating to device lost: %s",
+                            _LOOPBACK_STALL_ESCALATION_SECONDS,
+                            device.name,
+                        )
+                        if self._on_device_lost and not self._loopback_lost_fired:
+                            self._loopback_lost_fired = True
+                            try:
+                                self._on_device_lost("loopback", device.name)
+                            except Exception:
+                                logger.exception(
+                                    "on_device_lost('loopback', ...) raised during escalation"
+                                )
+                        break  # exit capture loop; cleanup in finally
                     if emit_silence:
                         self._on_level_update(-1, 0.0, -1)
                         self._on_audio_chunk(b"", silence_chunk)
