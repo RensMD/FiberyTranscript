@@ -710,6 +710,31 @@ class FiberyTranscriptApp:
             "normalize": self.settings.post_normalize,
         }
 
+    def _set_power_state(self, prevent_sleep: bool) -> None:
+        """Windows-only: prevent or allow system sleep via SetThreadExecutionState.
+
+        Thread-lifetime caveat: Windows clears ES_CONTINUOUS when the calling
+        thread exits. All call sites below run on the long-lived app / JS bridge
+        thread — do NOT move this call onto a short-lived worker thread or the
+        assertion evaporates when that thread returns.
+        """
+        if sys.platform != "win32":
+            return
+        import ctypes
+        ES_CONTINUOUS = 0x80000000
+        ES_SYSTEM_REQUIRED = 0x00000001
+        try:
+            if prevent_sleep:
+                ctypes.windll.kernel32.SetThreadExecutionState(
+                    ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+                )
+                logger.debug("Sleep prevention enabled")
+            else:
+                ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+                logger.debug("Sleep prevention cleared")
+        except Exception as e:
+            logger.debug("SetThreadExecutionState failed: %s", e)
+
     def _build_level_monitor_noise_suppressor(self):
         """Create the optional mic suppressor used for speech detection."""
         if not self.settings.noise_suppression:
@@ -1502,6 +1527,7 @@ class FiberyTranscriptApp:
         self._health_monitor.reset()
         self._last_lock_refresh = time.monotonic()
         self.state = self.STATE_RECORDING
+        self._set_power_state(prevent_sleep=True)
         logger.info("Recording started (mic=%s, loopback=%s)",
                      mic_device and mic_device.name, loopback_device and loopback_device.name)
 
@@ -1606,6 +1632,7 @@ class FiberyTranscriptApp:
 
     def _stop_recording_inner(self) -> Optional[dict]:
         """Inner stop logic (caller must hold _stop_lock)."""
+        self._set_power_state(prevent_sleep=False)
         # Clear decision popup state if active
         self._decision_popup_active = False
         self._checkpoints = []
@@ -2328,6 +2355,7 @@ class FiberyTranscriptApp:
             self.audio_capture.stop_capture()
         except Exception as e:
             logger.warning("Error stopping capture on sleep: %s", e)
+        self._set_power_state(prevent_sleep=False)
 
         # Flush mixer and tear down
         if self._mixer:
@@ -2506,6 +2534,7 @@ class FiberyTranscriptApp:
             except Exception as e:
                 logger.warning("Failed to refresh lock on wake: %s", e)
 
+        self._set_power_state(prevent_sleep=True)
         logger.info("Recording resumed (%.1f s recorded so far)", self._accumulated_recording_secs)
 
     # --- Batch Processing ---
@@ -3648,6 +3677,7 @@ class FiberyTranscriptApp:
         with self._stop_lock:
             if self.state != self.STATE_RECORDING:
                 return
+            self._set_power_state(prevent_sleep=False)
             logger.info("Emergency stop: saving recording files before shutdown")
 
             # Clear popup state
