@@ -7,6 +7,7 @@ When only one source is active, outputs mono to halve file size.
 import logging
 import threading
 import time
+from collections import deque
 from typing import Callable
 
 import numpy as np
@@ -48,9 +49,15 @@ class AudioMixer:
         self._mic_buffer = b""
         self._loopback_buffer = b""
         self._lock = threading.Lock()
-        # Serializes downstream callback emission so concurrent mic + loopback
-        # producer threads cannot interleave chunks in the WAV stream. Held
-        # only around _on_mixed_chunk dispatch, never around buffer work.
+        # Shared FIFO of mixed chunks ready for downstream emission. Producers
+        # append to this queue WHILE HOLDING _lock — that pins enqueue order to
+        # _lock acquisition order, which in turn is the authoritative time order
+        # for mixed audio. _emit_lock serializes drain so only one thread at a
+        # time dispatches, and the drain walks the queue in FIFO order so the
+        # emission order always matches the enqueue order regardless of which
+        # producer wins the _emit_lock race. This avoids the re-ordering bug
+        # of dispatching straight from per-call `pending` lists outside _lock.
+        self._emit_queue: deque[bytes] = deque()
         self._emit_lock = threading.Lock()
         self._has_mic = has_mic
         self._has_loopback = has_loopback
@@ -79,7 +86,6 @@ class AudioMixer:
         """Add microphone PCM data to the mix buffer."""
         if not pcm_data:
             return
-        pending: list[bytes] = []
         with self._lock:
             now = time.monotonic()
             self._last_mic_audio_time = now
@@ -88,14 +94,16 @@ class AudioMixer:
             self._stall_warned_mic = False  # Source is alive again
             self._mic_buffer += pcm_data
             self._cap_buffer()
+            pending: list[bytes] = []
             self._try_mix(pending)
-        self._emit_pending(pending)
+            # Enqueue inside _lock so queue order == _lock acquisition order
+            self._emit_queue.extend(pending)
+        self._drain_emit_queue()
 
     def add_loopback_audio(self, pcm_data: bytes) -> None:
         """Add loopback/system PCM data to the mix buffer."""
         if not pcm_data:
             return
-        pending: list[bytes] = []
         with self._lock:
             now = time.monotonic()
             self._last_loopback_audio_time = now
@@ -104,20 +112,24 @@ class AudioMixer:
             self._stall_warned_loop = False  # Source is alive again
             self._loopback_buffer += pcm_data
             self._cap_buffer()
+            pending: list[bytes] = []
             self._try_mix(pending)
-        self._emit_pending(pending)
+            self._emit_queue.extend(pending)
+        self._drain_emit_queue()
 
-    def _emit_pending(self, pending: list[bytes]) -> None:
-        """Dispatch mixed chunks downstream, serialized by _emit_lock.
+    def _drain_emit_queue(self) -> None:
+        """Drain the mixed-chunk queue under _emit_lock in FIFO order.
 
-        Runs outside _lock so downstream disk I/O never stalls audio callbacks.
-        _emit_lock only excludes other emitters — producer threads queueing
-        into the mixer are unaffected.
+        Any producer thread may call this; only one actually drains at a
+        time thanks to _emit_lock, and it drains until empty so we never
+        leave chunks stranded waiting for the next producer to show up.
         """
-        if not pending:
-            return
         with self._emit_lock:
-            for chunk in pending:
+            while True:
+                try:
+                    chunk = self._emit_queue.popleft()
+                except IndexError:
+                    return
                 self._on_mixed_chunk(chunk)
 
     def _cap_buffer(self) -> None:
@@ -294,7 +306,6 @@ class AudioMixer:
 
     def flush(self) -> None:
         """Flush remaining audio in buffers."""
-        pending: list[bytes] = []
         with self._lock:
             # Mix whatever remains, padding the shorter side with silence
             mic_len = len(self._mic_buffer)
@@ -306,7 +317,7 @@ class AudioMixer:
                 loop_data = self._loopback_buffer + b"\x00" * (flush_len - loop_len)
                 mic_samples = np.frombuffer(mic_data, dtype=np.int16)
                 loop_samples = np.frombuffer(loop_data, dtype=np.int16)
-                pending.append(self._emit_chunk(mic_samples, loop_samples))
+                self._emit_queue.append(self._emit_chunk(mic_samples, loop_samples))
                 self._mic_buffer = b""
                 self._loopback_buffer = b""
-        self._emit_pending(pending)
+        self._drain_emit_queue()

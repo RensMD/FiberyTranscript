@@ -183,6 +183,12 @@ class FiberyTranscriptApp:
         # Power monitor (set by main.py)
         self._power_monitor = None
 
+        # Windows process-wide sleep-prevention handle. Held between
+        # _set_power_state(True) and _set_power_state(False). See
+        # _acquire_system_power_request for why this is process-scoped
+        # rather than SetThreadExecutionState (per-thread).
+        self._power_request_handle = None
+
         # Multi-segment recording across sleep/wake cycles
         self._recording_segments: list[Path] = []    # completed WAV segment paths
         self._segment_ogg_paths: list[Path] = []     # parallel OGG paths to clean up
@@ -711,29 +717,83 @@ class FiberyTranscriptApp:
         }
 
     def _set_power_state(self, prevent_sleep: bool) -> None:
-        """Windows-only: prevent or allow system sleep via SetThreadExecutionState.
+        """Windows-only: acquire or release a process-wide system power request.
 
-        Thread-lifetime caveat: Windows clears ES_CONTINUOUS when the calling
-        thread exits. All call sites below run on the long-lived app / JS bridge
-        thread — do NOT move this call onto a short-lived worker thread or the
-        assertion evaporates when that thread returns.
+        Uses PowerCreateRequest / PowerSetRequest (process-scoped) instead of
+        SetThreadExecutionState (thread-scoped). Critical distinction: sleep
+        and wake callbacks fire on short-lived system threads, so a
+        per-thread assertion from those call sites would evaporate as soon
+        as the callback returned. A process-wide power request survives the
+        calling thread's exit.
         """
         if sys.platform != "win32":
             return
-        import ctypes
-        ES_CONTINUOUS = 0x80000000
-        ES_SYSTEM_REQUIRED = 0x00000001
         try:
             if prevent_sleep:
-                ctypes.windll.kernel32.SetThreadExecutionState(
-                    ES_CONTINUOUS | ES_SYSTEM_REQUIRED
-                )
-                logger.debug("Sleep prevention enabled")
+                self._acquire_system_power_request()
             else:
-                ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
-                logger.debug("Sleep prevention cleared")
+                self._release_system_power_request()
         except Exception as e:
-            logger.debug("SetThreadExecutionState failed: %s", e)
+            logger.debug("Power request update failed: %s", e)
+
+    def _acquire_system_power_request(self) -> None:
+        """Create and activate a PowerRequestSystemRequired request."""
+        if self._power_request_handle is not None:
+            return
+        import ctypes
+
+        POWER_REQUEST_CONTEXT_VERSION = 0
+        POWER_REQUEST_CONTEXT_SIMPLE_STRING = 0x1
+        PowerRequestSystemRequired = 1
+
+        class REASON_CONTEXT(ctypes.Structure):
+            _fields_ = [
+                ("Version", ctypes.c_ulong),
+                ("Flags", ctypes.c_ulong),
+                ("SimpleReasonString", ctypes.c_wchar_p),
+            ]
+
+        ctx = REASON_CONTEXT(
+            POWER_REQUEST_CONTEXT_VERSION,
+            POWER_REQUEST_CONTEXT_SIMPLE_STRING,
+            "Fibery Transcript: recording audio",
+        )
+        kernel32 = ctypes.windll.kernel32
+        kernel32.PowerCreateRequest.restype = ctypes.c_void_p
+        kernel32.PowerCreateRequest.argtypes = [ctypes.c_void_p]
+        kernel32.PowerSetRequest.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        kernel32.PowerSetRequest.restype = ctypes.c_bool
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+
+        handle = kernel32.PowerCreateRequest(ctypes.byref(ctx))
+        if not handle:
+            raise OSError("PowerCreateRequest returned NULL")
+        if not kernel32.PowerSetRequest(handle, PowerRequestSystemRequired):
+            kernel32.CloseHandle(handle)
+            raise OSError("PowerSetRequest failed")
+        self._power_request_handle = handle
+        logger.debug("PowerRequest(SystemRequired) acquired")
+
+    def _release_system_power_request(self) -> None:
+        """Clear and close the system power request if held."""
+        if self._power_request_handle is None:
+            return
+        import ctypes
+        PowerRequestSystemRequired = 1
+        kernel32 = ctypes.windll.kernel32
+        kernel32.PowerClearRequest.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        kernel32.PowerClearRequest.restype = ctypes.c_bool
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_bool
+        try:
+            kernel32.PowerClearRequest(
+                self._power_request_handle, PowerRequestSystemRequired
+            )
+            kernel32.CloseHandle(self._power_request_handle)
+        finally:
+            self._power_request_handle = None
+        logger.debug("PowerRequest(SystemRequired) released")
 
     def _build_level_monitor_noise_suppressor(self):
         """Create the optional mic suppressor used for speech detection."""
