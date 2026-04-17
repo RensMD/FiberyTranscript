@@ -317,6 +317,26 @@ class WindowsAudioCapture(AudioCapture):
         native_channels = 0
         chunk_size = 0
 
+        # Register this thread for MMCSS "Pro Audio" scheduling so the Windows
+        # scheduler prioritizes it under CPU load (reduces audio glitches while
+        # transcription/summarization hammers the CPU). Reverted in the finally
+        # block below. Falls through silently on non-Windows / unsupported runtimes.
+        mmcss_handle = None
+        avrt = None
+        try:
+            import ctypes
+            avrt = ctypes.windll.LoadLibrary("avrt.dll")
+            task_index = ctypes.c_ulong(0)
+            mmcss_handle = avrt.AvSetMmThreadCharacteristicsW(
+                "Pro Audio", ctypes.byref(task_index)
+            )
+            if mmcss_handle:
+                logger.debug("MMCSS 'Pro Audio' registered for loopback thread")
+            else:
+                logger.debug("MMCSS registration returned NULL (non-critical)")
+        except Exception as e:
+            logger.debug("MMCSS unavailable: %s", e)
+
         try:
             dev_info = p.get_device_info_by_index(device.index)
             native_rate = int(dev_info["defaultSampleRate"])
@@ -459,6 +479,11 @@ class WindowsAudioCapture(AudioCapture):
             self._loopback_stream = None
             p.terminate()
             self._pyaudio_instance = None
+            if mmcss_handle and avrt is not None:
+                try:
+                    avrt.AvRevertMmThreadCharacteristics(mmcss_handle)
+                except Exception:
+                    pass
 
     def stop_capture(self) -> None:
         self._capturing = False
