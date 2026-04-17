@@ -338,19 +338,46 @@ class AudioMixer:
             return False
 
     def flush(self) -> None:
-        """Flush remaining audio in buffers."""
+        """Flush remaining audio in buffers.
+
+        Stereo path always interleaves (silence-padding the short side).
+        Mono path emits whichever buffer actually has content — importantly,
+        this keeps the tail of the recording when the last remaining source
+        has been deactivated (both _has_mic and _has_loopback flipped to
+        False) right before flush. _emit_chunk's mono single-source branch
+        picks via _has_mic, which would emit silence in that post-deactivation
+        case; we bypass it here by dispatching the non-empty buffer directly.
+        """
         with self._lock:
-            # Mix whatever remains, padding the shorter side with silence
             mic_len = len(self._mic_buffer)
             loop_len = len(self._loopback_buffer)
-            flush_len = max(mic_len, loop_len)
+            if mic_len == 0 and loop_len == 0:
+                self._drain_emit_queue()
+                return
 
-            if flush_len > 0:
+            if self.channels == 2:
+                flush_len = max(mic_len, loop_len)
                 mic_data = self._mic_buffer + b"\x00" * (flush_len - mic_len)
                 loop_data = self._loopback_buffer + b"\x00" * (flush_len - loop_len)
                 mic_samples = np.frombuffer(mic_data, dtype=np.int16)
                 loop_samples = np.frombuffer(loop_data, dtype=np.int16)
                 self._emit_queue.append(self._emit_chunk(mic_samples, loop_samples))
-                self._mic_buffer = b""
-                self._loopback_buffer = b""
+            elif self._has_mic and self._has_loopback:
+                # Mono with both sources still active — mix them (pad short side)
+                flush_len = max(mic_len, loop_len)
+                mic_data = self._mic_buffer + b"\x00" * (flush_len - mic_len)
+                loop_data = self._loopback_buffer + b"\x00" * (flush_len - loop_len)
+                mic_samples = np.frombuffer(mic_data, dtype=np.int16)
+                loop_samples = np.frombuffer(loop_data, dtype=np.int16)
+                self._emit_queue.append(self._emit_chunk(mic_samples, loop_samples))
+            else:
+                # Mono single-source (either always was, or other side died).
+                # Emit whichever buffer holds real samples.
+                if mic_len > 0:
+                    self._emit_queue.append(self._mic_buffer)
+                else:
+                    self._emit_queue.append(self._loopback_buffer)
+
+            self._mic_buffer = b""
+            self._loopback_buffer = b""
         self._drain_emit_queue()

@@ -1778,9 +1778,14 @@ class FiberyTranscriptApp:
                 logger.error("Rollback also failed, recording continues without audio")
             raise RuntimeError(f"Failed to switch to new audio source: {e}") from e
 
-        # Update tracked device indices
+        # Update tracked device indices AND names. Names drive sleep/wake
+        # device resolution (_find_device_by_name), so a stale name here would
+        # make the app resume on the original device after a wake even when
+        # the user explicitly switched mid-recording.
         self._selected_mic_index = mic_index
         self._selected_sys_index = loopback_index
+        self._selected_mic_name = mic_device.name if mic_device else None
+        self._selected_loopback_name = loopback_device.name if loopback_device else None
         logger.info("Audio sources switched successfully")
 
     def stop_recording(self) -> Optional[dict]:
