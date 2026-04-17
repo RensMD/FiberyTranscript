@@ -152,6 +152,10 @@ class FiberyTranscriptApp:
         self._silence_counter_sys: int = 0
         self._selected_mic_index: Optional[int] = None
         self._selected_sys_index: Optional[int] = None
+        # Device names at recording start. Used by _resume_recording_locked to
+        # re-resolve devices after sleep/wake when indices may have shifted.
+        self._selected_mic_name: Optional[str] = None
+        self._selected_loopback_name: Optional[str] = None
         self._monitor_include_loopback: bool = False
         # Periodic idle rescans are disabled in favor of explicit one-shot
         # auto-detect runs from the UI when the Recording tab becomes active
@@ -1546,6 +1550,11 @@ class FiberyTranscriptApp:
         if loopback_index is not None and loopback_device is None:
             raise RuntimeError("Selected speaker output is no longer available. Please refresh your audio devices.")
 
+        # Persist device names so resume-after-sleep can look them up even if
+        # indices shifted (USB re-enumeration, dock reconnect).
+        self._selected_mic_name = mic_device.name if mic_device else None
+        self._selected_loopback_name = loopback_device.name if loopback_device else None
+
         self._recording_channels = 2 if (mic_device is not None and loopback_device is not None) else 1
         self.stop_background_scanning()
 
@@ -2068,6 +2077,55 @@ class FiberyTranscriptApp:
         logger.warning("Device with index %d not found", index)
         return None
 
+    def _find_device_by_name(self, name: str, is_loopback: bool) -> Optional[AudioDevice]:
+        """Resolve a device by name, falling back to the OS default.
+
+        Never falls back to the first enumerated device — Windows
+        enumeration order is not stable across sleep/dock/USB churn, and
+        silently picking the wrong source is worse than failing loudly.
+        Returns None if both the named device and the OS default are
+        unresolvable; caller surfaces a toast / stops recording.
+        """
+        list_fn = (
+            self.audio_capture.list_loopback_devices
+            if is_loopback
+            else self.audio_capture.list_input_devices
+        )
+        try:
+            devices = list_fn()
+        except Exception as e:
+            logger.warning("Device list failed during name lookup: %s", e)
+            devices = []
+
+        # Exact match first
+        for dev in devices:
+            if dev.name == name:
+                return dev
+        # Substring match — device name can shift slightly after re-enumeration
+        for dev in devices:
+            if name in dev.name or dev.name in name:
+                return dev
+
+        # OS default fallback (added in Phase 0.1)
+        try:
+            default_dev = (
+                self.audio_capture.get_default_loopback_device()
+                if is_loopback
+                else self.audio_capture.get_default_input_device()
+            )
+        except Exception as e:
+            logger.warning("Default device lookup failed: %s", e)
+            default_dev = None
+        if default_dev:
+            logger.warning(
+                "Device %r not found, falling back to OS default %r",
+                name, default_dev.name,
+            )
+            return default_dev
+
+        logger.error("Device %r not found and no OS default available", name)
+        return None
+
     # --- Audio Callbacks ---
 
     def _on_audio_chunk(self, mic_pcm: bytes, loopback_pcm: bytes) -> None:
@@ -2588,14 +2646,24 @@ class FiberyTranscriptApp:
         """
         self.audio_capture.reinitialize()
 
+        # Resolve devices by NAME on resume (indices can shift after sleep/
+        # wake, USB re-enumeration, dock reconnect). _find_device_by_name
+        # falls back to the OS default when the named device is gone, or
+        # returns None if even the default is unresolvable — in which case
+        # we fail loudly rather than silently recording the wrong source.
         mic_device = (
-            self._find_device(self._selected_mic_index, is_loopback=False)
-            if self._selected_mic_index is not None else None
+            self._find_device_by_name(self._selected_mic_name, is_loopback=False)
+            if self._selected_mic_name else None
         )
         loopback_device = (
-            self._find_device(self._selected_sys_index, is_loopback=True)
-            if self._selected_sys_index is not None else None
+            self._find_device_by_name(self._selected_loopback_name, is_loopback=True)
+            if self._selected_loopback_name else None
         )
+
+        if mic_device:
+            self._selected_mic_index = mic_device.index
+        if loopback_device:
+            self._selected_sys_index = loopback_device.index
 
         if not mic_device and not loopback_device:
             raise RuntimeError("No audio devices found after wake")
