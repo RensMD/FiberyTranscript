@@ -88,6 +88,10 @@ class WindowsAudioCapture(AudioCapture):
         self._loopback_thread: Optional[threading.Thread] = None
         self._pyaudio_instance = None
         self._loopback_device_cache: Optional[List[AudioDevice]] = None
+        # One-shot log flags for stream-status warnings. Avoids flooding the
+        # log with one line per callback when a stream enters a degraded state.
+        self._mic_status_warned = False
+        self._loopback_status_warned = False
 
     def reinitialize(self) -> None:
         """Re-initialize sounddevice to pick up newly connected devices."""
@@ -258,7 +262,12 @@ class WindowsAudioCapture(AudioCapture):
         """Start microphone capture stream."""
         def mic_callback(indata: np.ndarray, frames: int, time_info, status):
             if status:
-                logger.debug("Mic stream status: %s", status)
+                if not self._mic_status_warned:
+                    logger.debug("Mic stream status: %s", status)
+                    self._mic_status_warned = True
+            elif self._mic_status_warned:
+                logger.debug("Mic stream status: recovered")
+                self._mic_status_warned = False
             samples = (indata[:, 0] * 32767).astype(np.int16)
             raw_level = calculate_rms(indata[:, 0])
             # Noise suppression for speech detection only
@@ -365,7 +374,12 @@ class WindowsAudioCapture(AudioCapture):
                 if not self._capturing:
                     return (None, pyaudio.paComplete)
                 if status:
-                    logger.debug("Loopback stream status: %s", status)
+                    if not self._loopback_status_warned:
+                        logger.debug("Loopback stream status: %s", status)
+                        self._loopback_status_warned = True
+                elif self._loopback_status_warned:
+                    logger.debug("Loopback stream status: recovered")
+                    self._loopback_status_warned = False
                 try:
                     raw_queue.put_nowait(bytes(in_data))
                 except queue.Full:
