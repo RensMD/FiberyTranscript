@@ -656,7 +656,17 @@ class WindowsAudioCapture(AudioCapture):
             # died underneath us (device removed, driver fault, etc.). Raise
             # on_device_lost before teardown so the app can degrade gracefully
             # to the surviving source instead of silently losing loopback.
-            if self._capturing and stream is not None:
+            #
+            # Skip this entirely when this thread is stale — self._capturing
+            # and self._on_device_lost now belong to a newer attempt, and
+            # firing on_device_lost here would tell the new session that ITS
+            # loopback just died (triggering Phase 2.1 degrade) when in fact
+            # only our superseded stream is shutting down.
+            if (
+                self._capturing
+                and stream is not None
+                and not is_stale()
+            ):
                 try:
                     still_active = stream.is_active()
                 except Exception:
