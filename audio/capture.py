@@ -92,6 +92,7 @@ class AudioCapture(ABC):
         sample_rate: int = 16000,
         noise_suppressor=None,
         on_device_lost: Optional[Callable[[str, str], None]] = None,
+        on_gap: Optional[Callable[[str, str, float, Optional[float]], None]] = None,
     ) -> None:
         """Start capturing audio.
 
@@ -105,6 +106,11 @@ class AudioCapture(ABC):
             on_device_lost: Optional callback fired when a device disconnects
                 during capture. Signature (source, device_name) where source
                 is "mic" or "loopback". May fire from a capture-layer thread.
+            on_gap: Optional callback fired for short audio gaps (stalls).
+                Signature (source, reason, time_point, duration). When
+                duration is None, the gap just started. When duration is a
+                float, the gap closed. Gap-tracking for device-lost events is
+                the app's responsibility (it receives on_device_lost separately).
         """
 
     @abstractmethod

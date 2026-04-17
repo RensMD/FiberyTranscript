@@ -111,6 +111,8 @@ class WindowsAudioCapture(AudioCapture):
         # Latch so a watcher cannot double-fire on_device_lost for the same source.
         self._mic_lost_fired = False
         self._loopback_lost_fired = False
+        # Gap-event callback (Phase 2.4). Optional; only wired for loopback stalls here.
+        self._on_gap: Optional[Callable[[str, str, float, Optional[float]], None]] = None
 
     def reinitialize(self) -> None:
         """Re-initialize sounddevice to pick up newly connected devices."""
@@ -260,6 +262,7 @@ class WindowsAudioCapture(AudioCapture):
         sample_rate: int = SAMPLE_RATE,
         noise_suppressor=None,
         on_device_lost: Optional[Callable[[str, str], None]] = None,
+        on_gap: Optional[Callable[[str, str, float, Optional[float]], None]] = None,
     ) -> None:
         if self._capturing:
             logger.warning("Already capturing, call stop_capture first")
@@ -270,6 +273,7 @@ class WindowsAudioCapture(AudioCapture):
         self._on_level_update = on_level_update
         self._noise_suppressor = noise_suppressor
         self._on_device_lost = on_device_lost
+        self._on_gap = on_gap
         self._mic_device_name = mic_device.name if mic_device else None
         self._loopback_device_name = loopback_device.name if loopback_device else None
         self._mic_lost_fired = False
@@ -507,6 +511,11 @@ class WindowsAudioCapture(AudioCapture):
                             native_channels,
                             chunk_size,
                         )
+                        if self._on_gap:
+                            try:
+                                self._on_gap("loopback", "stall", now, None)
+                            except Exception:
+                                logger.exception("on_gap(stall start) raised")
                     # Escalate a long, unbroken stall to a full device-lost
                     # event. Silence injection alone would hide a dead channel
                     # for the entire meeting.
@@ -530,7 +539,8 @@ class WindowsAudioCapture(AudioCapture):
                         self._on_audio_chunk(b"", silence_chunk)
                     continue
 
-                recovery_duration = watchdog.notify_data(time.monotonic())
+                recovery_time = time.monotonic()
+                recovery_duration = watchdog.notify_data(recovery_time)
                 if recovery_duration is not None:
                     logger.warning(
                         "Loopback callback recovered: device=%s duration=%.3fs stall_count=%d",
@@ -538,6 +548,11 @@ class WindowsAudioCapture(AudioCapture):
                         recovery_duration,
                         watchdog.stall_count,
                     )
+                    if self._on_gap:
+                        try:
+                            self._on_gap("loopback", "stall", recovery_time, recovery_duration)
+                        except Exception:
+                            logger.exception("on_gap(stall close) raised")
 
                 samples = np.frombuffer(data, dtype=np.int16)
                 if native_channels > 1:
@@ -627,6 +642,7 @@ class WindowsAudioCapture(AudioCapture):
             logger.info("Loopback capture stopped")
 
         self._on_device_lost = None
+        self._on_gap = None
         self._mic_device_name = None
         self._loopback_device_name = None
 

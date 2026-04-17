@@ -41,6 +41,20 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class AudioGap:
+    """Records one interval of lost / degraded audio capture.
+
+    duration == 0.0 means the gap is still open. Closed gaps have the
+    elapsed seconds. Used for diagnostics — logged on stop, optionally
+    surfaced in UI. See Phase 2.4 in the Audio Master Plan.
+    """
+    start_time: float           # time.monotonic() at gap start
+    duration: float             # seconds (0.0 while open)
+    source: str                 # "mic", "loopback", or "both"
+    reason: str                 # e.g. "stall", "device_lost:<name>", "sleep"
+
+
+@dataclass
 class RecordingCheckpoint:
     """A point-in-time marker during recording for the decision popup.
 
@@ -192,6 +206,13 @@ class FiberyTranscriptApp:
         # _acquire_system_power_request for why this is process-scoped
         # rather than SetThreadExecutionState (per-thread).
         self._power_request_handle = None
+
+        # Gap-interval tracking (Phase 2.4). Records one entry per detected
+        # loss of audio continuity: loopback stalls, device disconnects,
+        # and sleep/wake pauses. Gap events fire from multiple threads so
+        # the lock is mandatory even for reads.
+        self._audio_gaps: list[AudioGap] = []
+        self._audio_gaps_lock = threading.Lock()
 
         # Multi-segment recording across sleep/wake cycles
         self._recording_segments: list[Path] = []    # completed WAV segment paths
@@ -798,6 +819,68 @@ class FiberyTranscriptApp:
         finally:
             self._power_request_handle = None
         logger.debug("PowerRequest(SystemRequired) released")
+
+    def _record_gap(
+        self,
+        source: str,
+        reason: str,
+        start_time: Optional[float] = None,
+        duration: float = 0.0,
+    ) -> AudioGap:
+        """Append an audio gap entry. Thread-safe — callable from any thread."""
+        if start_time is None:
+            start_time = time.monotonic()
+        gap = AudioGap(
+            start_time=start_time,
+            duration=duration,
+            source=source,
+            reason=reason,
+        )
+        with self._audio_gaps_lock:
+            self._audio_gaps.append(gap)
+        return gap
+
+    def _close_last_gap(
+        self,
+        source: str,
+        reason_prefix: str,
+        end_time: Optional[float] = None,
+    ) -> None:
+        """Close the most recent OPEN gap matching source + reason prefix.
+
+        Used when a gap recovery event can be observed (e.g. loopback stall
+        resolved, system waked). Gaps without a recovery event (e.g. device
+        lost and never returned) stay at duration=0.0 and are surfaced that
+        way in the summary log.
+        """
+        if end_time is None:
+            end_time = time.monotonic()
+        with self._audio_gaps_lock:
+            for gap in reversed(self._audio_gaps):
+                if (
+                    gap.duration == 0.0
+                    and gap.source == source
+                    and gap.reason.startswith(reason_prefix)
+                ):
+                    gap.duration = max(0.0, end_time - gap.start_time)
+                    return
+
+    def _log_gap_summary(self) -> None:
+        """Emit the end-of-recording gap summary log line."""
+        with self._audio_gaps_lock:
+            gaps = list(self._audio_gaps)
+        if not gaps:
+            return
+        total = sum(g.duration for g in gaps)
+        logger.info(
+            "Recording gap summary: %d gaps, %.1fs total gap time",
+            len(gaps), total,
+        )
+        for g in gaps:
+            logger.info(
+                "  Gap: source=%s reason=%s duration=%.1fs",
+                g.source, g.reason, g.duration,
+            )
 
     def _build_level_monitor_noise_suppressor(self):
         """Create the optional mic suppressor used for speech detection."""
@@ -1541,6 +1624,9 @@ class FiberyTranscriptApp:
         self._accumulated_recording_secs = 0.0
         self._segment_start_time = time.monotonic()
 
+        with self._audio_gaps_lock:
+            self._audio_gaps = []
+
         # Find devices by index
         mic_device = self._find_device(mic_index, is_loopback=False) if mic_index is not None else None
         loopback_device = self._find_device(loopback_index, is_loopback=True) if loopback_index is not None else None
@@ -1582,6 +1668,7 @@ class FiberyTranscriptApp:
                 on_level_update=self._on_level_update,
                 noise_suppressor=noise_suppressor,
                 on_device_lost=self._on_device_lost,
+                on_gap=self._on_capture_gap,
             )
         except Exception:
             self._resume_background_scanning()
@@ -1663,6 +1750,7 @@ class FiberyTranscriptApp:
                 on_level_update=self._on_level_update,
                 noise_suppressor=ns,
                 on_device_lost=self._on_device_lost,
+                on_gap=self._on_capture_gap,
             )
         except Exception as e:
             logger.error("Failed to start new audio source: %s, attempting rollback", e)
@@ -1683,6 +1771,7 @@ class FiberyTranscriptApp:
                     on_level_update=self._on_level_update,
                     noise_suppressor=ns,
                     on_device_lost=self._on_device_lost,
+                    on_gap=self._on_capture_gap,
                 )
                 logger.info("Rolled back to previous audio sources")
             except Exception:
@@ -1705,6 +1794,7 @@ class FiberyTranscriptApp:
     def _stop_recording_inner(self) -> Optional[dict]:
         """Inner stop logic (caller must hold _stop_lock)."""
         self._set_power_state(prevent_sleep=False)
+        self._log_gap_summary()
         # Clear decision popup state if active
         self._decision_popup_active = False
         self._checkpoints = []
@@ -2013,6 +2103,24 @@ class FiberyTranscriptApp:
         self.prepare_uploaded_audio(file_path)
         self.start_transcription(TranscriptionOptions())
 
+    def _on_capture_gap(
+        self,
+        source: str,
+        reason: str,
+        time_point: float,
+        duration: Optional[float],
+    ) -> None:
+        """Bookkeeping for capture-layer gap events (stall start / close).
+
+        Fires from the loopback capture thread. duration=None marks the
+        start of a gap; a numeric duration closes the most recent open
+        gap matching source + reason_prefix.
+        """
+        if duration is None:
+            self._record_gap(source=source, reason=reason, start_time=time_point)
+        else:
+            self._close_last_gap(source, reason_prefix=reason, end_time=time_point)
+
     def _on_device_lost(self, source: str, device_name: str) -> None:
         """Handle audio device disconnection during recording.
 
@@ -2033,6 +2141,11 @@ class FiberyTranscriptApp:
                 self._mixer.deactivate_source(source)
             except Exception:
                 logger.exception("Mixer deactivate_source failed")
+
+        # Record an open-ended gap. No recovery event for device-loss (the
+        # channel is permanently gone for this recording) — summary will
+        # show duration=0.0 to distinguish from recovered stalls.
+        self._record_gap(source=source, reason=f"device_lost:{device_name}")
 
         if source == "mic":
             msg = (
@@ -2517,6 +2630,9 @@ class FiberyTranscriptApp:
         if self.state != self.STATE_RECORDING or self._sleeping:
             return
 
+        # Open a sleep gap. Closed in on_system_wake.
+        self._record_gap(source="both", reason="sleep")
+
         # Stop audio capture (devices will be invalid after sleep)
         try:
             self.audio_capture.stop_capture()
@@ -2569,6 +2685,9 @@ class FiberyTranscriptApp:
 
         sleep_duration = time.time() - self._sleep_wall_time
         self._sleeping = False
+
+        # Close out the sleep gap opened in _on_system_sleep_locked.
+        self._close_last_gap(source="both", reason_prefix="sleep")
 
         # Reset silence tracking BEFORE resume to prevent stale _recording_silence_start
         # from triggering a false silence detection when audio callbacks start firing
@@ -2691,6 +2810,7 @@ class FiberyTranscriptApp:
             on_level_update=self._on_level_update,
             noise_suppressor=getattr(self, '_noise_suppressor', None),
             on_device_lost=self._on_device_lost,
+            on_gap=self._on_capture_gap,
         )
 
         self._segment_start_time = time.monotonic()
