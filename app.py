@@ -2195,16 +2195,26 @@ class FiberyTranscriptApp:
         logger.warning("Device with index %d not found", index)
         return None
 
-    def _find_device_by_name(self, name: str, is_loopback: bool) -> Optional[AudioDevice]:
-        """Resolve a device by exact name match. Returns None when not found.
+    def _find_device_by_name(
+        self,
+        name: str,
+        is_loopback: bool,
+        expected_index: Optional[int] = None,
+    ) -> Optional[AudioDevice]:
+        """Resolve a device by exact name match. Returns None when ambiguous/missing.
 
         Safety properties, in order:
           1. Exact match only. No substring or OS-default fallback — those
              can silently swap the recorded source to a different physical
              device.
-          2. If two or more devices share the exact name, returns None.
-             Without a backend-stable endpoint ID we cannot disambiguate,
-             and guessing can record from the wrong physical input.
+          2. If two or more devices share the exact name, prefer the one
+             whose backend index matches expected_index (the index
+             captured at recording start). This covers the common case
+             where duplicate-name hardware still enumerates in stable
+             order; when the indices have shuffled too (no unique match)
+             we return None rather than guess which physical endpoint to
+             use. A backend-stable endpoint ID would be the proper fix;
+             index-as-tiebreaker is a pragmatic stopgap.
           3. Transient enumeration errors propagate as exceptions. A short
              retry loop papers over one-off sounddevice / PortAudio hiccups,
              but persistent failures are re-raised so the caller distinguishes
@@ -2240,10 +2250,14 @@ class FiberyTranscriptApp:
         if len(matches) == 1:
             return matches[0]
         if len(matches) > 1:
+            if expected_index is not None:
+                for dev in matches:
+                    if dev.index == expected_index:
+                        return dev
             logger.warning(
-                "Device name %r matches %d devices; refusing to guess "
-                "which physical endpoint to use",
-                name, len(matches),
+                "Device name %r matches %d devices and index %r is not among "
+                "them; refusing to guess which physical endpoint to use",
+                name, len(matches), expected_index,
             )
             return None
         logger.warning(
@@ -2789,12 +2803,16 @@ class FiberyTranscriptApp:
         wanted_mic_name = self._selected_mic_name
         wanted_loopback_name = self._selected_loopback_name
 
-        def _resolve(name: Optional[str], is_loopback: bool):
+        def _resolve(name: Optional[str], is_loopback: bool, expected_index: Optional[int]):
             """Return (device, status). status ∈ {'unset','ok','missing','transient'}."""
             if not name:
                 return None, "unset"
             try:
-                dev = self._find_device_by_name(name, is_loopback=is_loopback)
+                dev = self._find_device_by_name(
+                    name,
+                    is_loopback=is_loopback,
+                    expected_index=expected_index,
+                )
             except Exception as e:
                 logger.warning(
                     "Transient device enumeration failure on wake for %r: %s",
@@ -2803,9 +2821,15 @@ class FiberyTranscriptApp:
                 return None, "transient"
             return dev, ("ok" if dev else "missing")
 
-        mic_device, mic_status = _resolve(wanted_mic_name, is_loopback=False)
+        mic_device, mic_status = _resolve(
+            wanted_mic_name,
+            is_loopback=False,
+            expected_index=self._selected_mic_index,
+        )
         loopback_device, loopback_status = _resolve(
-            wanted_loopback_name, is_loopback=True
+            wanted_loopback_name,
+            is_loopback=True,
+            expected_index=self._selected_sys_index,
         )
 
         if mic_device:
@@ -2813,18 +2837,12 @@ class FiberyTranscriptApp:
         if loopback_device:
             self._selected_sys_index = loopback_device.index
 
-        # Transient backend failure: raise to let the wake-resume-failed
-        # flow finalize the recording up to sleep cleanly. Must NOT clear
-        # the saved device name — the device is presumed still connected.
-        if mic_status == "transient" or loopback_status == "transient":
-            raise RuntimeError(
-                "Audio backend unavailable after wake; try again later"
-            )
-
-        # Definitive miss (device gone OR ambiguous duplicate-name) — treat
-        # as Phase 2.1 device-lost: clear the stored name so future wakes
-        # don't keep retrying, surface a toast, and continue with the
-        # surviving side if any.
+        # Handle each side independently. "missing" is definitive (clear the
+        # stored name — we saw the device list and the device wasn't there).
+        # "transient" is tentative (keep the name so a future event can retry
+        # — the device is presumed still connected). In either case, if the
+        # OTHER side resolved ok, we continue recording with the survivor
+        # rather than aborting the whole session on a one-sided failure.
         if mic_status == "missing":
             self._selected_mic_name = None
             self._record_gap(source="mic", reason=f"wake_unresolved:{wanted_mic_name}")
@@ -2834,6 +2852,15 @@ class FiberyTranscriptApp:
                     "continuing without it."
                 ) + ", 'warning', 9000)"
             )
+        elif mic_status == "transient":
+            self._record_gap(source="mic", reason=f"wake_transient:{wanted_mic_name}")
+            self._notify_js(
+                "window.showToast(" + json.dumps(
+                    f"Microphone temporarily unavailable ({wanted_mic_name}); "
+                    "continuing without it. Try Refresh Devices to reattach."
+                ) + ", 'warning', 9000)"
+            )
+
         if loopback_status == "missing":
             self._selected_loopback_name = None
             self._record_gap(
@@ -2844,6 +2871,17 @@ class FiberyTranscriptApp:
                 "window.showToast(" + json.dumps(
                     f"System audio unavailable after wake ({wanted_loopback_name}); "
                     "continuing without it."
+                ) + ", 'warning', 9000)"
+            )
+        elif loopback_status == "transient":
+            self._record_gap(
+                source="loopback",
+                reason=f"wake_transient:{wanted_loopback_name}",
+            )
+            self._notify_js(
+                "window.showToast(" + json.dumps(
+                    f"System audio temporarily unavailable ({wanted_loopback_name}); "
+                    "continuing without it. Try Refresh Devices to reattach."
                 ) + ", 'warning', 9000)"
             )
 
