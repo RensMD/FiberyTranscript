@@ -719,6 +719,15 @@ class WindowsAudioCapture(AudioCapture):
         self._capturing = False
         self._loopback_device_cache = None  # Allow fresh enumeration when idle
         self._mic_watcher_stop.set()
+        # Bump the loopback attempt generation so any in-flight loopback
+        # thread (e.g. a timed-out open that is still blocked in p.open()
+        # or p.get_device_info_by_index()) sees is_stale() == True when it
+        # finally resumes, and cannot feed audio into the next session's
+        # callbacks. _start_loopback also bumps on each new attempt, but
+        # that only helps when the next start_capture includes a loopback
+        # — the degrade-to-mic-only fallback path does not call
+        # _start_loopback, so this bump is the one that covers it.
+        self._loopback_attempt_generation += 1
 
         if self._mic_stream:
             try:

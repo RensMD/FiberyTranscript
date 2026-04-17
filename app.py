@@ -913,41 +913,60 @@ class FiberyTranscriptApp:
 
         return ogg_noise_suppressor, ogg_agc
 
-    def _rollback_partial_recorder_and_mixer(self) -> None:
-        """Tear down a recorder+mixer that was created for a start that then failed.
+    def _teardown_partial_recorder_and_mixer(self, preserve: bool) -> None:
+        """Stop and clear the current mixer + recorder.
 
-        Used by both _start_recording_locked and _resume_recording_locked
-        when audio_capture.start_capture() raises. The recorder's durability
-        and OGG threads are already alive by that point; leaving them running
-        leaks threads + file handles and can also leave an orphan WAV/OGG
-        on disk that never becomes part of _recording_segments.
+        preserve=True: append the resulting WAV/OGG to _recording_segments /
+            _segment_ogg_paths so any audio captured up to this point is
+            included in _finalize_and_prepare(). Used by wake-resume when a
+            capture-start attempt fails partway — mic can have recorded
+            several seconds of user speech before the loopback open handshake
+            times out, and we must not silently drop it.
+
+        preserve=False: delete the partial WAV/OGG. Used at initial record
+            start, where the session never successfully transitioned to
+            STATE_RECORDING so no user-visible recording should remain on disk.
+
+        Always flushes the mixer BEFORE stopping the recorder so the
+        mixer's buffered samples end up in the WAV rather than being
+        discarded with the mixer instance.
         """
-        if self._recorder is not None:
-            partial_paths: list[Path] = []
-            try:
-                seg_path = self._recorder.stop()
-                if seg_path:
-                    partial_paths.append(seg_path)
-                ogg_path = self._recorder.compressed_path
-                if ogg_path:
-                    partial_paths.append(ogg_path)
-            except Exception:
-                logger.debug("recorder.stop() during rollback raised", exc_info=True)
-            self._recorder = None
-            if partial_paths:
-                try:
-                    self._discard_paths(partial_paths)
-                except Exception:
-                    logger.debug(
-                        "Could not discard partial recording paths during rollback",
-                        exc_info=True,
-                    )
         if self._mixer is not None:
             try:
                 self._mixer.flush()
             except Exception:
-                logger.debug("mixer.flush() during rollback raised", exc_info=True)
+                logger.debug("mixer.flush() during teardown raised", exc_info=True)
             self._mixer = None
+
+        if self._recorder is not None:
+            seg_path: Optional[Path] = None
+            ogg_path: Optional[Path] = None
+            try:
+                seg_path = self._recorder.stop()
+                ogg_path = self._recorder.compressed_path
+            except Exception:
+                logger.debug("recorder.stop() during teardown raised", exc_info=True)
+            self._recorder = None
+
+            if preserve:
+                if seg_path and seg_path.exists():
+                    self._recording_segments.append(seg_path)
+                if ogg_path and ogg_path.exists():
+                    self._segment_ogg_paths.append(ogg_path)
+            else:
+                paths: list[Path] = []
+                if seg_path:
+                    paths.append(seg_path)
+                if ogg_path:
+                    paths.append(ogg_path)
+                if paths:
+                    try:
+                        self._discard_paths(paths)
+                    except Exception:
+                        logger.debug(
+                            "Could not discard partial recording paths",
+                            exc_info=True,
+                        )
 
     def _start_recorder(self, channels: Optional[int] = None) -> Path:
         """Start a recorder using the session's fixed channel layout."""
@@ -1711,9 +1730,10 @@ class FiberyTranscriptApp:
             # audio_capture.start_capture() ran. A raised start_capture
             # leaves them live (recorder's durability + OGG threads are
             # already spawned) and leaves an empty or partial WAV/OGG on
-            # disk. Stop the recorder, discard its artifacts, and drop
-            # the mixer before re-raising.
-            self._rollback_partial_recorder_and_mixer()
+            # disk. Stop the recorder, discard its artifacts (session
+            # never entered STATE_RECORDING so no user-visible output
+            # should remain), and drop the mixer before re-raising.
+            self._teardown_partial_recorder_and_mixer(preserve=False)
             self._resume_background_scanning()
             raise
 
@@ -2939,12 +2959,19 @@ class FiberyTranscriptApp:
         started_loopback: Optional[AudioDevice] = None
         last_err: Optional[BaseException] = None
 
+        first_attempt = True
         for label, attempt_mic, attempt_loop in attempts:
             # Tear down any partial mixer+recorder from a previous attempt
-            # before building the next one. (Also handles the normal case
-            # where the first attempt succeeds — the for loop exits with
-            # state held.)
-            self._rollback_partial_recorder_and_mixer()
+            # before building the next one. PRESERVE any audio captured
+            # during a failed combined attempt — on Windows the mic opens
+            # immediately while the loopback open handshake can take up to
+            # 5s, so user speech right after wake ends up in that partial
+            # recorder and must flow into _recording_segments rather than
+            # being deleted. First iteration has nothing to tear down.
+            if not first_attempt:
+                self._teardown_partial_recorder_and_mixer(preserve=True)
+            first_attempt = False
+
             self._mixer = AudioMixer(
                 on_mixed_chunk=self._on_mixed_audio,
                 has_mic=attempt_mic is not None,
@@ -2973,9 +3000,10 @@ class FiberyTranscriptApp:
                 )
 
         if started_mic is None and started_loopback is None:
-            # All attempts failed — roll back and raise so on_system_wake
-            # finalizes the recording cleanly.
-            self._rollback_partial_recorder_and_mixer()
+            # All attempts failed. Preserve any audio we captured during
+            # the first attempt so on_system_wake's finalize path can pick
+            # it up. Then raise.
+            self._teardown_partial_recorder_and_mixer(preserve=True)
             raise RuntimeError(
                 f"Could not open any audio stream after wake: {last_err}"
             ) from last_err
